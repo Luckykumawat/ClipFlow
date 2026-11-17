@@ -7,7 +7,7 @@ RUN pip install --no-cache-dir yt-dlp -r /tmp/requirements-ai.txt
 RUN useradd --create-home --uid 10001 clipflow
 WORKDIR /app
 COPY --chown=clipflow:clipflow server.py /app/server.py
-COPY --chown=clipflow:clipflow ai_engine.py setup_ai.py /app/
+COPY --chown=clipflow:clipflow ai_engine.py setup_ai.py storage.py /app/
 COPY --chown=clipflow:clipflow assets /app/assets
 COPY --chown=clipflow:clipflow web /app/web
 RUN mkdir /app/models && chown clipflow:clipflow /app/models

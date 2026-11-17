@@ -59,3 +59,11 @@ Keep the server bound to loopback for local use. See `DEPLOY.md` for the existin
 - YuNet: https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet (see model license)
 - Potion English (free cloud profile): https://huggingface.co/minishlab/potion-base-8M (MIT)
 - Noto Sans Devanagari: https://github.com/google/fonts/tree/main/ofl/notosansdevanagari (SIL OFL; license in `assets/OFL.txt`)
+
+## Manage storage
+
+The workspace storage panel shows app files, originals, generated MP4 clips and available filesystem disk space. Other app files include captions, transcripts, job metadata and uploads that have not yet been linked to a project. AI model files are outside this app-data total. Shared originals count only once in the total.
+
+Each completed or failed project provides **Delete original video** (keeps clips, captions and transcript) and **Delete project** (removes the project and its files). Download results first. Both operations require a permanent-deletion confirmation. Active/queued projects cannot be deleted. An original used by another active project cannot be removed. Deleting a project preserves a shared uploaded source until the final referencing project is removed; explicitly deleting a shared original removes that source for all referencing projects while keeping all their clips.
+
+Deletion does not affect copies already downloaded to your device. The storage panel refreshes periodically and immediately after deletion; use **Refresh storage** for an on-demand update.

@@ -33,6 +33,8 @@ jobs:
           docker exec clipflow python /app/long_video.py
           docker cp tests/large_upload.py clipflow:/app/large_upload.py
           docker exec clipflow python /app/large_upload.py
+          docker cp tests/storage_management.py clipflow:/app/storage_management.py
+          docker exec clipflow python /app/storage_management.py
       - name: Container diagnostics
         if: always()
         run: |

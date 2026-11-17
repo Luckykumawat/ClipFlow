@@ -2,9 +2,10 @@
 import json, math, os, subprocess, threading, uuid, mimetypes, base64, hmac, shutil, zipfile, tempfile
 from pathlib import Path
 from urllib.parse import urlparse, unquote, parse_qs
-import sys, importlib.util
+import sys, importlib.util, re
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
+import storage
 ROOT=Path(__file__).resolve().parent
 DATA=Path(os.environ.get('DATA_DIR',str(ROOT/'data'))); DATA.mkdir(parents=True,exist_ok=True)
 PORT=int(os.environ.get('PORT','8765'))
@@ -17,7 +18,7 @@ APP_PASSWORD=os.environ.get('APP_PASSWORD','')
 BIND=os.environ.get('BIND_HOST','127.0.0.1')
 if BIND!='127.0.0.1' and (not APP_USER or len(APP_PASSWORD)<20):
     raise RuntimeError('Network deployment requires APP_USER and APP_PASSWORD of at least 20 characters')
-LOCK=threading.Lock()
+LOCK=threading.RLock()
 def load():
     try: return json.loads((DATA/'jobs.json').read_text())
     except FileNotFoundError: return []
@@ -125,19 +126,23 @@ class Handler(BaseHTTPRequestHandler):
         if hmac.compare_digest(self.headers.get('Authorization',''),expected): return True
         self.send_response(401); self.send_header('WWW-Authenticate','Basic realm="Clipflow"'); self.send_header('Content-Length','0'); self.end_headers(); return False
     def respond(self,code,data):
-        body=json.dumps(data).encode(); self.send_response(code); self.send_header('Content-Type','application/json'); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body)
+        body=json.dumps(data).encode(); self.send_response(code); self.send_header('Content-Type','application/json'); self.send_header('Cache-Control','no-store'); self.send_header('Content-Length',str(len(body))); self.end_headers(); self.wfile.write(body)
     def do_GET(self):
         if urlparse(self.path).path=='/healthz':return self.respond(200,{'status':'ok'})
         if not self.authorized(): return
         path=unquote(urlparse(self.path).path)
-        if path=='/api/jobs': return self.respond(200,JOBS)
+        if path=='/api/jobs':
+            with LOCK:return self.respond(200,JOBS)
+        if path=='/api/storage':
+            with LOCK:return self.respond(200,storage.inventory(DATA,JOBS))
         if path=='/api/health':
             return self.respond(200,{'ai':all(importlib.util.find_spec(m) is not None for m in ('faster_whisper','fastembed','cv2','PIL')),'face_model':(ROOT/'models'/'face_detection_yunet_2023mar.onnx').is_file(),'cloud_lite':CLOUD_LITE,'upload_limit':MAX_UPLOAD,'max_source_seconds':MAX_SOURCE_SECONDS,'max_clips':None})
         if path.startswith('/api/bundle/'):
             job=next((j for j in JOBS if j['id']==path.rsplit('/',1)[-1]),None)
             if not job or job['status']!='ready': return self.respond(404,{'error':'Completed project not found'})
             with tempfile.TemporaryFile() as bundle:
-                with zipfile.ZipFile(bundle,'w',compression=zipfile.ZIP_STORED) as archive:
+                with LOCK, zipfile.ZipFile(bundle,'w',compression=zipfile.ZIP_STORED) as archive:
+                    if job not in JOBS:return self.respond(404,{'error':'Project was deleted'})
                     for clip in job['clips']:
                         archive.write(DATA/job['id']/clip['name'],clip['name'])
                         if clip.get('srt'): archive.write(DATA/job['id']/clip['srt'],clip['srt'])
@@ -204,6 +209,21 @@ class Handler(BaseHTTPRequestHandler):
                 return self.respond(201,{'upload':token,'title':Path(name).name})
             except OSError as e:return self.respond(507,{'error':'Upload could not be stored. Check available server disk space.'})
             except (ValueError,RuntimeError) as e:return self.respond(400,{'error':str(e)})
+        match=re.fullmatch(r'/api/jobs/([a-f0-9]{32})/delete',urlparse(self.path).path)
+        if match:
+            try:
+                length=int(self.headers.get('Content-Length','0'))
+                if not 1<=length<=4096:raise ValueError('Invalid deletion request')
+                body=json.loads(self.rfile.read(length))
+                if not isinstance(body,dict) or body.get('confirm') is not True:raise ValueError('Explicit deletion confirmation is required')
+                with LOCK:
+                    job=next((j for j in JOBS if j['id']==match.group(1)),None)
+                    if not job:return self.respond(404,{'error':'Project not found'})
+                    code,result=storage.delete(DATA,JOBS,job,body.get('action'))
+                    if code==200:save()
+                    return self.respond(code,result)
+            except (ValueError,TypeError) as e:return self.respond(400,{'error':str(e)})
+            except OSError:return self.respond(500,{'error':'Some files could not be deleted. Refresh storage and try again.'})
         if self.path!='/api/jobs': return self.respond(404,{'error':'Not found'})
         try:
             size=int(self.headers.get('Content-Length','0'))
@@ -239,7 +259,10 @@ class Handler(BaseHTTPRequestHandler):
             if selection=='highlights' or captions or tracking:
                 if not all(importlib.util.find_spec(m) is not None for m in ('faster_whisper','fastembed','cv2','PIL')):raise ValueError('Start with Start.command to use the AI environment. Run Setup AI.command if needed.')
             job=dict(upload=upload,selection=selection,model=model,language=language,caption_style=style,captions=captions,tracking=tracking,topic=topic,layout=layout,start=start,end=end,max_clips=max_clips,profile=profile,browser=browser,id=uuid.uuid4().hex,url=url,seconds=seconds,title=str(body.get('title','Uploaded video'))[:200] if upload else 'New YouTube video',status='queued',clips=[],total=0)
-            JOBS.insert(0,job); save(); threading.Thread(target=process,args=(job,),daemon=True).start(); return self.respond(201,job)
+            with LOCK:
+                if upload and not (DATA/'uploads'/upload).is_file():raise ValueError('This original was deleted. Choose the file and upload it again.')
+                JOBS.insert(0,job);save()
+            threading.Thread(target=process,args=(job,),daemon=True).start(); return self.respond(201,job)
         except (ValueError,KeyError,TypeError,OverflowError) as e: return self.respond(400,{'error':str(e)})
 if __name__=='__main__':
     server=ThreadingHTTPServer((BIND,PORT),Handler)
