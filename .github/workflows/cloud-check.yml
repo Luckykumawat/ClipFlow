@@ -26,7 +26,9 @@ jobs:
       - name: Verify full AI workflow
         env:
           APP_PASSWORD: ci-only-disposable-password123
-        run: python3 tests/cloud_smoke.py
+        run: |
+          docker cp tests/cloud_smoke.py clipflow:/app/cloud_smoke.py
+          docker exec -e APP_PASSWORD=ci-only-disposable-password123 clipflow python /app/cloud_smoke.py
       - name: Container diagnostics
         if: always()
         run: |
