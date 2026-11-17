@@ -16,12 +16,12 @@ with tempfile.TemporaryDirectory() as td:
     http=app.ThreadingHTTPServer(('127.0.0.1',0),app.Handler);threading.Thread(target=http.serve_forever,daemon=True).start()
     auth='Basic '+base64.b64encode((app.APP_USER+':'+app.APP_PASSWORD).encode()).decode()
     def request(path,body=None,origin=None,authenticated=True):
-        conn=http_client=httpclient.HTTPConnection('127.0.0.1',http.server_address[1],timeout=10)
+        conn=httpclient.HTTPConnection('127.0.0.1',http.server_address[1],timeout=10)
         headers={'Content-Type':'application/json'}
         if authenticated:headers['Authorization']=auth
         if origin:headers['Origin']=origin
         conn.request('POST' if body is not None else 'GET',path,json.dumps(body).encode() if body is not None else None,headers)
-        r=conn.getresponse();code=r.status;raw=r.read();conn.close();return code,json.loads(raw)
+        r=conn.getresponse();code=r.status;raw=r.read();conn.close();return code,json.loads(raw) if raw else None
     # Alias avoids shadowing the imported module with the server instance.
     import http.client as httpclient
     def delete(job,action,confirm=True):return request('/api/jobs/'+job['id']+'/delete',{'action':action,'confirm':confirm})
