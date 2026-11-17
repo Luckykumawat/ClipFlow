@@ -2,7 +2,7 @@
 
 [Deploy the free cloud profile](https://render.com/deploy?repo=https://github.com/Luckykumawat/ClipFlow) · [Deployment guide](DEPLOY.md)
 
-The desktop profile runs on your computer. The cloud profile runs independently on a server, with smaller models, 95 MB / 5-minute sources, up to 3 clips, 720p exports and temporary files. See the deployment guide for free-service limitations. A deployment must complete before there is a live URL.
+The desktop profile runs on your computer. The cloud profile runs independently on a server, with smaller models, 95 MB file uploads, uncapped source duration and all-clip mode, 720p exports and temporary files. See the deployment guide for free-service limitations. A deployment must complete before there is a live URL.
 
 For desktop use, install Python 3.12 and FFmpeg/ffprobe, run `Setup AI.command`, then open `Start.command` and visit http://127.0.0.1:8765/. Setup needs internet for packages and models. Models, user media and environments are intentionally excluded from this GitHub repository.
 

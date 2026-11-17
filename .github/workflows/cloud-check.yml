@@ -29,6 +29,8 @@ jobs:
         run: |
           docker cp tests/cloud_smoke.py clipflow:/app/cloud_smoke.py
           docker exec -e APP_PASSWORD=ci-only-disposable-password123 clipflow python /app/cloud_smoke.py
+          docker cp tests/long_video.py clipflow:/app/long_video.py
+          docker exec clipflow python /app/long_video.py
       - name: Container diagnostics
         if: always()
         run: |

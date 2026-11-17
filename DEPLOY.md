@@ -16,7 +16,9 @@ The app validates same-origin requests using `RENDER_EXTERNAL_URL`; its health c
 
 ### Free profile limits
 
-- 95 MB uploads, source recordings up to 5 minutes, at most 3 clips per job, at most 60 seconds per clip.
+- 95 MB file uploads. YouTube downloads have no app-imposed file-size or duration cap; available disk and provider restrictions still apply.
+- Clip limit `0` means all clips; evenly spaced mode covers the full selected range, including a shorter final clip. Positive limits 1–500 are optional. AI highlights return selected, nonoverlapping speech moments rather than full source coverage.
+- Speech is transcribed in bounded 60-second audio windows to avoid loading long audio recordings into RAM. Transcription around window boundaries may need correction.
 - Whisper Tiny rather than Base/Small, English Potion embeddings in memory-mapped mode (non-English speech is translated for ranking; captions preserve the source language), and single-threaded encoding.
 - Portrait exports at 720×1280, square at 720×720. The desktop profile remains higher resolution.
 - The free service has limited CPU and RAM. Expect slow generation and cold starts. Long recordings and production throughput need more resources.

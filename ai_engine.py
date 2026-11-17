@@ -47,19 +47,24 @@ def _transcribe_local(source, folder, model='base', language='', progress=lambda
         ASR.clear()
         ASR[model] = WhisperModel(model, device='cpu', compute_type='int8', cpu_threads=1 if CLOUD_LITE else min(6, os.cpu_count() or 2), download_root=str(MODELS / 'whisper'))
     import numpy as np
-    decoded=subprocess.run(['ffmpeg','-nostdin','-v','error','-i',str(source),'-vn','-ac','1','-ar','16000','-f','f32le','pipe:1'],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
-    if decoded.returncode:raise RuntimeError('Could not read speech audio: '+decoded.stderr.decode(errors='replace')[-800:])
-    audio=np.frombuffer(decoded.stdout,dtype=np.float32)
-    if len(audio)==0:raise ValueError('No audio found. Disable captions and AI highlights for silent videos.')
-    segments, info = ASR[model].transcribe(audio, language=language or None, beam_size=3,task=task,
-                                         word_timestamps=True, vad_filter=True, condition_on_previous_text=False)
-    output = []
-    for s in segments:
-        if s.no_speech_prob > .85: continue
-        output.append({'start': s.start, 'end': s.end, 'text': s.text.strip(), 'words':
-                       [{'start': w.start, 'end': w.end, 'text': w.word.strip()} for w in (s.words or [])]})
-        progress('transcribing', f'Transcribed {s.end:.0f} seconds')
-    result = {'language': info.language, 'segments': output}
+    duration=float(subprocess.check_output(['ffprobe','-v','error','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1',str(source)]))
+    output=[]; detected_language=language or None
+    # Decode bounded audio windows rather than retaining a long recording in RAM.
+    for offset in range(0,math.ceil(duration),60):
+        decoded=subprocess.run(['ffmpeg','-nostdin','-v','error','-ss',str(offset),'-i',str(source),'-t','60','-vn','-ac','1','-ar','16000','-f','f32le','pipe:1'],stdout=subprocess.PIPE,stderr=subprocess.PIPE)
+        if decoded.returncode:raise RuntimeError('Could not read speech audio: '+decoded.stderr.decode(errors='replace')[-800:])
+        audio=np.frombuffer(decoded.stdout,dtype=np.float32)
+        if len(audio)==0:continue
+        segments,info=ASR[model].transcribe(audio,language=detected_language,beam_size=3,task=task,word_timestamps=True,vad_filter=True,condition_on_previous_text=False)
+        chunk=[]
+        for segment in segments:
+            if segment.no_speech_prob>.85:continue
+            chunk.append({'start':offset+segment.start,'end':min(duration,offset+segment.end),'text':segment.text.strip(),'words':
+                [{'start':offset+w.start,'end':min(duration,offset+w.end),'text':w.word.strip()} for w in (segment.words or [])]})
+        if chunk and not detected_language:detected_language=info.language
+        output.extend(chunk)
+        progress('transcribing',f'Transcribed {min(duration,offset+60):.0f} / {duration:.0f} seconds')
+    result = {'language':detected_language or language or 'en','segments':output}
     (folder / ('highlight-transcript.json' if task=='translate' else 'transcript.json')).write_text(json.dumps(result, ensure_ascii=False, indent=2))
     return result
 
@@ -77,7 +82,8 @@ def candidates(segments, start, end, seconds):
         if word['start']-last<step and not sentence_start:continue
         a=word['start'];limit=min(end,a+seconds)
         selected=[]
-        for w in words[i:]:
+        for word_index in range(i,len(words)):
+            w=words[word_index]
             if w['end']>limit:break
             selected.append(w)
         if not selected:continue
@@ -114,7 +120,7 @@ def select_highlights(segments, start, end, seconds, count, topic='', progress=l
     for c in ranked:
         if all(min(c['start']+c['duration'], p['start']+p['duration']) <= max(c['start'], p['start']) for p in chosen):
             chosen.append(c)
-            if len(chosen) >= count: break
+            if count and len(chosen) >= count: break
     if CLOUD_LITE:
         EMBEDDER=None
         import gc

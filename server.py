@@ -10,7 +10,7 @@ DATA=Path(os.environ.get('DATA_DIR',str(ROOT/'data'))); DATA.mkdir(parents=True,
 PORT=int(os.environ.get('PORT','8765'))
 CLOUD_LITE=os.environ.get('CLOUD_LITE')=='1'
 MAX_UPLOAD=int(os.environ.get('MAX_UPLOAD_BYTES',str(95*1024**2 if CLOUD_LITE else 2*1024**3)))
-MAX_SOURCE_SECONDS=300 if CLOUD_LITE else 0
+MAX_SOURCE_SECONDS=0
 PUBLIC_ORIGIN=os.environ.get('PUBLIC_ORIGIN') or os.environ.get('RENDER_EXTERNAL_URL') or f'http://127.0.0.1:{PORT}'
 APP_USER=os.environ.get('APP_USER','')
 APP_PASSWORD=os.environ.get('APP_PASSWORD','')
@@ -68,15 +68,13 @@ def process(job):
                 progress('downloading','Downloading source video…')
                 browser_spec=job.get('browser','')+(':'+job['profile'] if job.get('profile') else '')
                 login=['--cookies-from-browser',browser_spec] if job.get('browser') else []
-                info=json.loads(run(['yt-dlp',*login,'--no-playlist','--max-filesize',str(MAX_UPLOAD),'--dump-single-json','--skip-download','--',job['url']]))
-                if MAX_SOURCE_SECONDS and float(info.get('duration') or 0)>MAX_SOURCE_SECONDS:raise ValueError('Free cloud mode supports source videos up to 5 minutes. Upload a shorter recording.')
+                info=json.loads(run(['yt-dlp',*login,'--no-playlist','--dump-single-json','--skip-download','--',job['url']]))
                 job['title']=info.get('title','Untitled video'); job['duration']=float(info.get('duration') or 0); save()
-                run(['yt-dlp',*login,'--no-playlist','--max-filesize',str(MAX_UPLOAD),'-f','bv*[height<=1080]+ba/b[height<=1080]','--merge-output-format','mp4','-o',str(folder/'source.%(ext)s'),'--',job['url']])
+                run(['yt-dlp',*login,'--no-playlist','-f','bv*[height<=720]+ba/b[height<=720]' if CLOUD_LITE else 'bv*[height<=1080]+ba/b[height<=1080]','--merge-output-format','mp4','-o',str(folder/'source.%(ext)s'),'--',job['url']])
                 sources=[p for p in folder.glob('source.*') if p.suffix not in ('.part','.ytdl')]
                 if not sources: raise RuntimeError('No source video downloaded')
                 source=sources[0]
             duration=float(run(['ffprobe','-v','error','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1',str(source)]))
-            if MAX_SOURCE_SECONDS and duration>MAX_SOURCE_SECONDS:raise ValueError('Free cloud mode supports source videos up to 5 minutes')
             offset=job.get('start',0)
             end=min(duration,job.get('end') or duration)
             if offset>=end: raise ValueError('Source start must be before the video end')
@@ -95,9 +93,9 @@ def process(job):
                     translated=ai_engine.transcribe(source,folder,'tiny',transcript.get('language',''),progress,task='translate')
                     highlight_segments=translated['segments']
                     job.setdefault('warnings',[]).append('Cloud highlights use translated English speech; captions keep the original language.')
-                windows=ai_engine.select_highlights(highlight_segments,offset,end,job['seconds'],job['max_clips'],job.get('topic',''),progress)
+                windows=ai_engine.select_highlights(highlight_segments,offset,end,job['seconds'],job.get('max_clips',0),job.get('topic',''),progress)
             else:
-                windows=[{'start':offset+i*job['seconds'],'duration':min(job['seconds'],end-offset-i*job['seconds'])} for i in range(min(math.ceil(span/job['seconds']),job.get('max_clips',500)))]
+                windows=[{'start':offset+i*job['seconds'],'duration':min(job['seconds'],end-offset-i*job['seconds'])} for i in range(min(math.ceil(span/job['seconds']),job.get('max_clips') or math.ceil(span/job['seconds'])))]
             job.update(duration=duration,status='cutting',total=len(windows),clips=[]); save()
             for i,window in enumerate(windows):
                 start=window['start']; length=window['duration']; name=f'clip-{i+1:03d}.mp4'
@@ -134,7 +132,7 @@ class Handler(BaseHTTPRequestHandler):
         path=unquote(urlparse(self.path).path)
         if path=='/api/jobs': return self.respond(200,JOBS)
         if path=='/api/health':
-            return self.respond(200,{'ai':all(importlib.util.find_spec(m) is not None for m in ('faster_whisper','fastembed','cv2','PIL')),'face_model':(ROOT/'models'/'face_detection_yunet_2023mar.onnx').is_file(),'cloud_lite':CLOUD_LITE,'upload_limit':MAX_UPLOAD,'max_source_seconds':MAX_SOURCE_SECONDS,'max_clips':3 if CLOUD_LITE else 500})
+            return self.respond(200,{'ai':all(importlib.util.find_spec(m) is not None for m in ('faster_whisper','fastembed','cv2','PIL')),'face_model':(ROOT/'models'/'face_detection_yunet_2023mar.onnx').is_file(),'cloud_lite':CLOUD_LITE,'upload_limit':MAX_UPLOAD,'max_source_seconds':MAX_SOURCE_SECONDS,'max_clips':None})
         if path.startswith('/api/bundle/'):
             job=next((j for j in JOBS if j['id']==path.rsplit('/',1)[-1]),None)
             if not job or job['status']!='ready': return self.respond(404,{'error':'Completed project not found'})
@@ -223,13 +221,13 @@ class Handler(BaseHTTPRequestHandler):
             if profile and (len(profile)>60 or not all(c.isalnum() or c in ' _-' for c in profile)): raise ValueError('Enter a profile folder such as Default or Profile 1')
             layout=body.get('layout','original')
             if layout not in ('original','portrait','square','portrait-fit'): raise ValueError('Invalid output layout')
-            start=float(body.get('start',0)); end=float(body.get('end') or 0); max_clips=int(body.get('max_clips',50))
+            start=float(body.get('start',0)); end=float(body.get('end') or 0); max_clips=int(body.get('max_clips',0))
             if not math.isfinite(start) or not math.isfinite(end) or start<0 or end<0 or (end and end<=start): raise ValueError('Enter valid source start and end seconds')
-            if not 1<=max_clips<=500: raise ValueError('Clip limit must be between 1 and 500')
+            if not 0<=max_clips<=500: raise ValueError('Choose All clips (0), or a clip limit between 1 and 500')
             selection=body.get('selection','even')
             model=body.get('model','base');language=body.get('language','');style=body.get('caption_style','bold')
             if selection not in ('even','highlights') or model not in ('tiny','base','small') or language not in ('','en','hi','es','fr','de','pt','ja','ko','zh','ar') or style not in ('bold','yellow','box'):raise ValueError('Invalid AI option')
-            if CLOUD_LITE and (model!='tiny' or max_clips>3 or seconds>60):raise ValueError('Free cloud mode uses Tiny, up to 3 clips, and a target length of at most 1 minute')
+            if CLOUD_LITE and model!='tiny':raise ValueError('Free cloud mode uses the Tiny speech model')
             captions=body.get('captions',False);tracking=body.get('tracking',False)
             if not isinstance(captions,bool) or not isinstance(tracking,bool):raise ValueError('Invalid checkbox option')
             if tracking and layout not in ('portrait','square'):raise ValueError('Speaker framing needs Portrait crop or Square crop')
