@@ -89,7 +89,13 @@ def process(job):
                 job['transcript']=True;job['detected_language']=transcript['language'];save()
                 if not transcript['segments'] and job.get('captions'): job.setdefault('warnings',[]).append('No clear speech found; captions could not be generated.')
             if job.get('selection')=='highlights':
-                windows=ai_engine.select_highlights(transcript['segments'],offset,end,job['seconds'],job['max_clips'],job.get('topic',''),progress)
+                highlight_segments=transcript['segments']
+                if CLOUD_LITE and transcript.get('language')!='en':
+                    progress('transcribing','Translating speech for the lightweight English highlight model…')
+                    translated=ai_engine.transcribe(source,folder,'tiny',transcript.get('language',''),progress,task='translate')
+                    highlight_segments=translated['segments']
+                    job.setdefault('warnings',[]).append('Cloud highlights use translated English speech; captions keep the original language.')
+                windows=ai_engine.select_highlights(highlight_segments,offset,end,job['seconds'],job['max_clips'],job.get('topic',''),progress)
             else:
                 windows=[{'start':offset+i*job['seconds'],'duration':min(job['seconds'],end-offset-i*job['seconds'])} for i in range(min(math.ceil(span/job['seconds']),job.get('max_clips',500)))]
             job.update(duration=duration,status='cutting',total=len(windows),clips=[]); save()
@@ -97,7 +103,9 @@ def process(job):
                 start=window['start']; length=window['duration']; name=f'clip-{i+1:03d}.mp4'
                 layout=job.get('layout','original')
                 filters={'portrait':'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1','square':'scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080,setsar=1','portrait-fit':'scale=1080:1920:force_original_aspect_ratio=decrease,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1'}
-                if CLOUD_LITE:filters={key:value.replace('1080','720').replace('1920','1280') for key,value in filters.items()}
+                if CLOUD_LITE:
+                    filters={key:value.replace('1080','720').replace('1920','1280') for key,value in filters.items()}
+                    filters['original']="scale=w='min(1280,iw)':h='min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2"
                 vf=['-vf',filters[layout]] if layout in filters else []
                 metadata={}
                 if job.get('captions') or job.get('tracking'):

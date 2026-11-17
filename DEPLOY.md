@@ -17,7 +17,7 @@ The app validates same-origin requests using `RENDER_EXTERNAL_URL`; its health c
 ### Free profile limits
 
 - 95 MB uploads, source recordings up to 5 minutes, at most 3 clips per job, at most 60 seconds per clip.
-- Whisper Tiny rather than Base/Small, multilingual static Potion embeddings in memory-mapped mode, and single-threaded encoding.
+- Whisper Tiny rather than Base/Small, English Potion embeddings in memory-mapped mode (non-English speech is translated for ranking; captions preserve the source language), and single-threaded encoding.
 - Portrait exports at 720×1280, square at 720×720. The desktop profile remains higher resolution.
 - The free service has limited CPU and RAM. Expect slow generation and cold starts. Long recordings and production throughput need more resources.
 - Render free services sleep when idle and may restart. **Uploads, transcripts, clip files and the project library are ephemeral. Download results promptly.** The repository and model image remain available independently of your Mac.

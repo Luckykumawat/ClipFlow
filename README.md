@@ -57,5 +57,5 @@ Keep the server bound to loopback for local use. See `DEPLOY.md` for the existin
 - Whisper weights: https://huggingface.co/Systran/faster-whisper-base
 - Multilingual MiniLM: https://huggingface.co/sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2 (Apache 2.0)
 - YuNet: https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet (see model license)
-- Potion multilingual (free cloud profile): https://huggingface.co/minishlab/potion-multilingual-128M (MIT)
+- Potion English (free cloud profile): https://huggingface.co/minishlab/potion-base-32M (MIT)
 - Noto Sans Devanagari: https://github.com/google/fonts/tree/main/ofl/notosansdevanagari (SIL OFL; license in `assets/OFL.txt`)

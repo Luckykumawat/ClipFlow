@@ -15,16 +15,16 @@ os.environ.setdefault('HF_HOME', str(MODELS / 'huggingface'))
 os.environ.setdefault('HF_HUB_DISABLE_XET', '1')
 os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
 CLOUD_LITE=os.environ.get('CLOUD_LITE')=='1'
-EMBED_MODEL='minishlab/potion-multilingual-128M' if CLOUD_LITE else 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'
+EMBED_MODEL='minishlab/potion-base-32M' if CLOUD_LITE else 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'
 ASR = {}
 EMBEDDER = None
 
 
-def transcribe(source, folder, model='base', language='', progress=lambda *_: None):
+def transcribe(source, folder, model='base', language='', progress=lambda *_: None, task='transcribe'):
     # Keep PyAV and OpenCV native libraries in separate processes on macOS.
     # Releasing Whisper before rendering also reduces peak memory.
     with tempfile.TemporaryFile() as errors:
-        process=subprocess.Popen([sys.executable,str(Path(__file__).resolve()),'--transcribe',str(Path(source).resolve()),str(Path(folder).resolve()),model,language],stdout=subprocess.PIPE,stderr=errors,text=True)
+        process=subprocess.Popen([sys.executable,str(Path(__file__).resolve()),'--transcribe',str(Path(source).resolve()),str(Path(folder).resolve()),model,language,task],stdout=subprocess.PIPE,stderr=errors,text=True)
         try:
             for line in process.stdout:
                 try:event=json.loads(line)
@@ -37,10 +37,10 @@ def transcribe(source, folder, model='base', language='', progress=lambda *_: No
         except BaseException:
             if process.poll() is None:process.kill();process.wait()
             raise
-    return json.loads((folder/'transcript.json').read_text())
+    return json.loads((folder/('highlight-transcript.json' if task=='translate' else 'transcript.json')).read_text())
 
 
-def _transcribe_local(source, folder, model='base', language='', progress=lambda *_: None):
+def _transcribe_local(source, folder, model='base', language='', progress=lambda *_: None, task='transcribe'):
     from faster_whisper import WhisperModel
     progress('transcribing', 'Loading local Whisper ' + model + ' model…')
     if model not in ASR:
@@ -51,7 +51,7 @@ def _transcribe_local(source, folder, model='base', language='', progress=lambda
     if decoded.returncode:raise RuntimeError('Could not read speech audio: '+decoded.stderr.decode(errors='replace')[-800:])
     audio=np.frombuffer(decoded.stdout,dtype=np.float32)
     if len(audio)==0:raise ValueError('No audio found. Disable captions and AI highlights for silent videos.')
-    segments, info = ASR[model].transcribe(audio, language=language or None, beam_size=3,
+    segments, info = ASR[model].transcribe(audio, language=language or None, beam_size=3,task=task,
                                          word_timestamps=True, vad_filter=True, condition_on_previous_text=False)
     output = []
     for s in segments:
@@ -60,7 +60,7 @@ def _transcribe_local(source, folder, model='base', language='', progress=lambda
                        [{'start': w.start, 'end': w.end, 'text': w.word.strip()} for w in (s.words or [])]})
         progress('transcribing', f'Transcribed {s.end:.0f} seconds')
     result = {'language': info.language, 'segments': output}
-    (folder / 'transcript.json').write_text(json.dumps(result, ensure_ascii=False, indent=2))
+    (folder / ('highlight-transcript.json' if task=='translate' else 'transcript.json')).write_text(json.dumps(result, ensure_ascii=False, indent=2))
     return result
 
 
@@ -97,7 +97,7 @@ def select_highlights(segments, start, end, seconds, count, topic='', progress=l
     if not options: raise ValueError('No clear speech found in this range. Try another range or use evenly spaced clips.')
     progress('analyzing', 'Ranking speech with a local multilingual semantic model…')
     if EMBEDDER is None:
-        EMBEDDER = TextEmbedding(EMBED_MODEL, cache_dir=str(MODELS / 'embeddings'), threads=1 if CLOUD_LITE else min(4, os.cpu_count() or 2), **({'mmap':True} if CLOUD_LITE else {}))
+        EMBEDDER = TextEmbedding(EMBED_MODEL, cache_dir=str(MODELS / 'embeddings'), threads=None if CLOUD_LITE else min(4, os.cpu_count() or 2), **({'mmap':True} if CLOUD_LITE else {}))
     prompts = [topic] if topic.strip() else [
         'A surprising insight, important lesson, or useful practical advice.',
         'An engaging story with a clear conclusion or a memorable opinion.',
@@ -236,7 +236,10 @@ def render(source, destination, start, duration, layout, cues, tracking, style, 
     if layout=='original': out_w,out_h=w//2*2,h//2*2
     elif layout=='square':out_w,out_h=1080,1080
     else:out_w,out_h=1080,1920
-    if CLOUD_LITE and layout!='original':out_w=720;out_h=720 if layout=='square' else 1280
+    if CLOUD_LITE:
+        if layout!='original':out_w=720;out_h=720 if layout=='square' else 1280
+        else:
+            factor=min(1,1280/max(w,h));out_w=max(2,int(w*factor)//2*2);out_h=max(2,int(h*factor)//2*2)
     tracker=SpeakerTracker() if tracking else None
     total=math.ceil(duration*fps); center=w/2;cue_i=0; frames=0
     # Pipe rendered frames into FFmpeg and take the original audio at the same offset.
@@ -270,5 +273,5 @@ def render(source, destination, start, duration, layout, cues, tracking, style, 
     return {'frames':frames,'face_samples':tracker.detections if tracker else 0,'tracking':'face + mouth motion' if tracker else 'off'}
 
 
-if __name__=='__main__' and len(sys.argv)==6 and sys.argv[1]=='--transcribe':
-    _transcribe_local(Path(sys.argv[2]),Path(sys.argv[3]),sys.argv[4],sys.argv[5],lambda status,detail:print(json.dumps({'status':status,'detail':detail}),flush=True))
+if __name__=='__main__' and len(sys.argv)==7 and sys.argv[1]=='--transcribe':
+    _transcribe_local(Path(sys.argv[2]),Path(sys.argv[3]),sys.argv[4],sys.argv[5],lambda status,detail:print(json.dumps({'status':status,'detail':detail}),flush=True),task=sys.argv[6])
