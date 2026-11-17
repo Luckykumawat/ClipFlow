@@ -15,7 +15,7 @@ os.environ.setdefault('HF_HOME', str(MODELS / 'huggingface'))
 os.environ.setdefault('HF_HUB_DISABLE_XET', '1')
 os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
 CLOUD_LITE=os.environ.get('CLOUD_LITE')=='1'
-EMBED_MODEL='minishlab/potion-base-32M' if CLOUD_LITE else 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'
+EMBED_MODEL='minishlab/potion-base-8M' if CLOUD_LITE else 'sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2'
 ASR = {}
 EMBEDDER = None
 
