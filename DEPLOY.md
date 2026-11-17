@@ -16,7 +16,7 @@ The app validates same-origin requests using `RENDER_EXTERNAL_URL`; its health c
 
 ### Free profile limits
 
-- 95 MB file uploads. YouTube downloads have no app-imposed file-size or duration cap; available disk and provider restrictions still apply.
+- Uploads have no app-imposed size cap. Data streams to disk in 1 MB blocks rather than loading the entire file into RAM. Uploads exceeding available disk space fail with a storage error. Administrators may optionally set `MAX_UPLOAD_BYTES` to a positive limit; `0` (default) disables the app size cap. YouTube downloads have no app-imposed file-size or duration cap; available disk and provider restrictions still apply.
 - Clip limit `0` means all clips; evenly spaced mode covers the full selected range, including a shorter final clip. Positive limits 1–500 are optional. AI highlights return selected, nonoverlapping speech moments rather than full source coverage.
 - Speech is transcribed in bounded 60-second audio windows to avoid loading long audio recordings into RAM. Transcription around window boundaries may need correction.
 - Whisper Tiny rather than Base/Small, English Potion embeddings in memory-mapped mode (non-English speech is translated for ranking; captions preserve the source language), and single-threaded encoding.

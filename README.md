@@ -2,13 +2,13 @@
 
 [Deploy the free cloud profile](https://render.com/deploy?repo=https://github.com/Luckykumawat/ClipFlow) · [Deployment guide](DEPLOY.md)
 
-The desktop profile runs on your computer. The cloud profile runs independently on a server, with smaller models, 95 MB file uploads, uncapped source duration and all-clip mode, 720p exports and temporary files. See the deployment guide for free-service limitations. A deployment must complete before there is a live URL.
+The desktop profile runs on your computer. The cloud profile runs independently on a server, with smaller models, uploads without an app-imposed size cap, uncapped source duration and all-clip mode, 720p exports and temporary files. See the deployment guide for free-service limitations. A deployment must complete before there is a live URL.
 
 For desktop use, install Python 3.12 and FFmpeg/ffprobe, run `Setup AI.command`, then open `Start.command` and visit http://127.0.0.1:8765/. Setup needs internet for packages and models. Models, user media and environments are intentionally excluded from this GitHub repository.
 
 ## Use the studio
 
-1. Paste a YouTube video URL or choose **Upload video** (up to 2 GB).
+1. Paste a YouTube video URL or choose **Upload video** (subject to available server disk space).
 2. Choose **AI highlights** or evenly spaced cuts. Optionally describe a topic to prioritize.
 3. Set target clip length, maximum clips, and original/portrait/square layout.
 4. Enable automatic captions and choose a caption style and speech language. Hindi and automatic language detection are available.

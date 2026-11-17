@@ -9,7 +9,7 @@ ROOT=Path(__file__).resolve().parent
 DATA=Path(os.environ.get('DATA_DIR',str(ROOT/'data'))); DATA.mkdir(parents=True,exist_ok=True)
 PORT=int(os.environ.get('PORT','8765'))
 CLOUD_LITE=os.environ.get('CLOUD_LITE')=='1'
-MAX_UPLOAD=int(os.environ.get('MAX_UPLOAD_BYTES',str(95*1024**2 if CLOUD_LITE else 2*1024**3)))
+MAX_UPLOAD=int(os.environ.get('MAX_UPLOAD_BYTES','0'))
 MAX_SOURCE_SECONDS=0
 PUBLIC_ORIGIN=os.environ.get('PUBLIC_ORIGIN') or os.environ.get('RENDER_EXTERNAL_URL') or f'http://127.0.0.1:{PORT}'
 APP_USER=os.environ.get('APP_USER','')
@@ -183,7 +183,9 @@ class Handler(BaseHTTPRequestHandler):
         if urlparse(self.path).path=='/api/upload':
             try:
                 size=int(self.headers.get('Content-Length','0'))
-                if not 1<=size<=MAX_UPLOAD:raise ValueError(f'Choose a video up to {MAX_UPLOAD//1024**2} MB')
+                if size<1:raise ValueError('Choose a non-empty video file')
+                if MAX_UPLOAD and size>MAX_UPLOAD:raise ValueError(f'This server is configured for uploads up to {MAX_UPLOAD//1024**2} MB')
+                if size>shutil.disk_usage(DATA).free:return self.respond(507,{'error':'Not enough free disk space for this upload. Download and remove old files or use a server with more storage.'})
                 name=parse_qs(urlparse(self.path).query).get('name',['video.mp4'])[0]
                 suffix=Path(name).suffix.lower()
                 if suffix not in ('.mp4','.mov','.mkv','.webm','.m4v'):raise ValueError('Use MP4, MOV, MKV, WebM or M4V')
@@ -200,6 +202,7 @@ class Handler(BaseHTTPRequestHandler):
                 except Exception:
                     target.unlink(missing_ok=True);raise
                 return self.respond(201,{'upload':token,'title':Path(name).name})
+            except OSError as e:return self.respond(507,{'error':'Upload could not be stored. Check available server disk space.'})
             except (ValueError,RuntimeError) as e:return self.respond(400,{'error':str(e)})
         if self.path!='/api/jobs': return self.respond(404,{'error':'Not found'})
         try:
