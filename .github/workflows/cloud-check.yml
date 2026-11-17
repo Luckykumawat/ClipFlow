@@ -1,0 +1,35 @@
+name: Cloud container verification
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build free cloud profile with cached models
+        run: docker build -f Dockerfile.cloud -t clipflow:test .
+      - name: Run with 512 MB RAM
+        run: docker run -d --name clipflow --memory=512m --memory-swap=512m --cpus=1 -p 8765:8765 -e APP_USER=clipflow -e APP_PASSWORD=ci-only-disposable-password123 clipflow:test
+      - name: Wait for health
+        run: |
+          for attempt in $(seq 1 60); do
+            if curl --fail --silent http://127.0.0.1:8765/healthz; then exit 0; fi
+            sleep 2
+          done
+          docker logs clipflow
+          exit 1
+      - name: Verify full AI workflow
+        env:
+          APP_PASSWORD: ci-only-disposable-password123
+        run: python3 tests/cloud_smoke.py
+      - name: Container diagnostics
+        if: always()
+        run: |
+          docker logs --tail 100 clipflow || true
+          docker inspect --format '{{json .State}}' clipflow || true
+          docker stats --no-stream clipflow || true

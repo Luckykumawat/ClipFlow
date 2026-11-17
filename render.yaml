@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: clipflow
+    runtime: docker
+    repo: https://github.com/Luckykumawat/ClipFlow
+    branch: main
+    plan: free
+    region: singapore
+    dockerfilePath: ./Dockerfile.cloud
+    healthCheckPath: /healthz
+    autoDeployTrigger: off
+    envVars:
+      - key: APP_USER
+        value: clipflow
+      - key: APP_PASSWORD
+        generateValue: true
+      - key: CLOUD_LITE
+        value: "1"
+      - key: BIND_HOST
+        value: 0.0.0.0
+      - key: DATA_DIR
+        value: /data
+      - key: OMP_NUM_THREADS
+        value: "1"
+      - key: OPENBLAS_NUM_THREADS
+        value: "1"

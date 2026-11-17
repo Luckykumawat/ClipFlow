@@ -1,0 +1,12 @@
+data/
+.env
+.env.*
+!.env.example
+__pycache__/
+*.pyc
+.venv/
+models/
+vendor/
+.DS_Store
+ai-studio-preview.jpg
+*.log

@@ -1,0 +1,36 @@
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    init: true
+    environment:
+      APP_USER: ${APP_USER:?Set APP_USER}
+      APP_PASSWORD: ${APP_PASSWORD:?Set a random password of at least 20 characters}
+      PUBLIC_ORIGIN: https://${DOMAIN:?Set DOMAIN}
+    volumes:
+      - clips:/data
+      - models:/app/models
+    mem_limit: 4g
+    cpus: 2
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: '3'
+  proxy:
+    image: caddy:2
+    restart: unless-stopped
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN}
+    ports:
+      - '80:80'
+      - '443:443'
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+volumes:
+  clips:
+  models:
+  caddy_data:
+  caddy_config:
