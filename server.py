@@ -133,8 +133,10 @@ def friendly_error(error, browser=''):
         if browser:
             return 'YouTube still requires age verification with the selected '+browser+' login. The browser selection was received. Make sure this video plays in that browser’s signed-in profile; a different Chrome profile may be needed. You can enter its profile folder below (for example Default or Profile 1).'
         return 'This video requires an age-verified YouTube login. Confirm playback in your browser, then select that browser or paste cookies.txt under YouTube login options and create a new job.'
-    if 'sign in to confirm' in lower or 'failed to extract any player response' in lower or ' blocked by youtube' in lower:
-        return 'YouTube blocked or rejected extraction from this server IP. Try an accessible video or use "Upload video" with a saved copy. '+actual[-600:]
+    if 'failed to extract any player response' in lower or 'sign in to confirm' in lower or ' blocked by youtube' in lower:
+        if CLOUD_LITE:
+            return 'YouTube could not be imported by this cloud server. Try the same link in local ClipFlow, or use Upload video with a saved copy you can edit.'
+        return 'YouTube could not be imported. Check that the link plays in your browser, or upload a saved copy. '+actual[-600:]
     return actual[-1600:]
 def normalize_cookies(raw):
     text=str(raw or '').strip()

@@ -6,7 +6,6 @@ ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
 with tempfile.TemporaryDirectory() as td:
     os.environ['DATA_DIR']=td;os.environ['CLOUD_LITE']='1'
     import server as app
-    import ai_engine as ai
     data=Path(td);uploads=data/'uploads';uploads.mkdir()
     source=uploads/'long.mp4'
     subprocess.run(['ffmpeg','-v','error','-y','-f','lavfi','-i','color=c=blue:s=160x90:r=1','-f','lavfi','-i','anullsrc=r=16000:cl=mono','-t','301','-c:v','libx264','-threads','1','-pix_fmt','yuv420p','-c:a','aac',str(source)],check=True)
@@ -18,6 +17,10 @@ with tempfile.TemporaryDirectory() as td:
     for clip in job['clips']:
         duration=float(subprocess.check_output(['ffprobe','-v','error','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1',str(data/job['id']/clip['name'])]))
         assert abs(duration-clip['duration'])<.15,(clip,duration)
+    print('PASS: 301-second source -> all 6 playable clips; final remainder')
+    if '--cuts-only' in sys.argv:
+        sys.exit(0)
+    import ai_engine as ai
     class Model:
         lengths=[]
         def transcribe(self,audio,**kwargs):
