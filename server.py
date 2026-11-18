@@ -69,7 +69,7 @@ def run(args):
         if local.exists(): env['PYTHONPATH']=str(ROOT/'vendor')
         base=[*cmd,'--ignore-config','--no-update','--socket-timeout','12' if CLOUD_LITE else '20']
         if CLOUD_LITE:
-            base.extend(['--extractor-retries','0','--retries','2','--fragment-retries','2'])
+            base.extend(['--force-ipv4','--extractor-retries','0','--retries','2','--fragment-retries','2'])
         try:
             import nodejs_wheel.executable as nw
             nw_node=Path(nw.ROOT_DIR)/('node.exe' if os.name=='nt' else 'bin/node')
@@ -331,7 +331,7 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/storage':
             with LOCK:return self.respond(200,storage.inventory(self.data,self.visible_jobs()))
         if path=='/api/health':
-            return self.respond(200,{'ai':highlights_available(),'face_model':(ROOT/'models'/'face_detection_yunet_2023mar.onnx').is_file(),'cloud_lite':CLOUD_LITE,'upload_limit':MAX_UPLOAD,'max_source_seconds':MAX_SOURCE_SECONDS,'max_clips':None,'public_access':PUBLIC_ACCESS})
+            return self.respond(200,{'ai':highlights_available(),'face_model':(ROOT/'models'/'face_detection_yunet_2023mar.onnx').is_file(),'cloud_lite':CLOUD_LITE,'youtube_build':os.environ.get('CLIPFLOW_YOUTUBE_BUILD'),'upload_limit':MAX_UPLOAD,'max_source_seconds':MAX_SOURCE_SECONDS,'max_clips':None,'public_access':PUBLIC_ACCESS})
         if path.startswith('/api/bundle/'):
             job=next((j for j in self.visible_jobs() if j['id']==path.rsplit('/',1)[-1]),None)
             if not job or job['status']!='ready': return self.respond(404,{'error':'Completed project not found'})

@@ -3,7 +3,9 @@ ARG CLOUD_LITE=1
 ENV CLOUD_LITE=${CLOUD_LITE} OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates nodejs && rm -rf /var/lib/apt/lists/*
 COPY requirements-ai.txt /tmp/requirements-ai.txt
-RUN pip install --no-cache-dir -U "yt-dlp[default,curl-cffi,deno]" pytubefix -r /tmp/requirements-ai.txt
+ARG CLOUD_YTDLP_VERSION=2026.11.17.232707.dev0
+RUN pip install --no-cache-dir "yt-dlp[default,curl-cffi,deno]==${CLOUD_YTDLP_VERSION}" -r /tmp/requirements-ai.txt
+ENV CLIPFLOW_YOUTUBE_BUILD=${CLOUD_YTDLP_VERSION}
 RUN useradd --create-home --uid 10001 clipflow
 WORKDIR /app
 COPY --chown=clipflow:clipflow server.py storage.py /app/
