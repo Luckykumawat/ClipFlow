@@ -54,4 +54,39 @@ function sourceRetry(job){
 }
 function uploadVideo(file,status=$('uploadStatus')){return new Promise((resolve,reject)=>{let xhr=new XMLHttpRequest();xhr.open('POST','/api/upload?name='+encodeURIComponent(file.name));xhr.upload.onprogress=e=>{if(e.lengthComputable)status.textContent=`Uploading ${Math.round(e.loaded/e.total*100)}% · ${file.name}`};xhr.onload=()=>{try{if(xhr.status===413)throw Error('Hosting rejected this request size. The app has no upload cap, but the hosting platform may impose its own limit.');let data;try{data=JSON.parse(xhr.responseText)}catch{throw Error('Upload failed (HTTP '+xhr.status+'). Check the connection and available server storage.')} if(xhr.status!==201)throw Error(data.error);resolve(data)}catch(e){reject(e)}};xhr.onerror=()=>reject(Error('Upload failed. Check the local server.'));xhr.send(file)})}
 $('form').onsubmit=async e=>{e.preventDefault();$('create').disabled=true;$('error').textContent='';try{if(sourceMode==='upload'&&!upload){const file=$('file').files[0];if(!file)throw Error('Choose a video first');if(uploadLimit&&file.size>uploadLimit)throw Error('Choose a video up to '+Math.floor(uploadLimit/1024**2)+' MB');$('create').textContent='Uploading…';upload=await uploadVideo(file);$('uploadStatus').textContent='✓ Video uploaded'}$('create').textContent='Creating project…';let body={url:sourceMode==='youtube'?$('url').value:'',rights:$('rights').checked,selection:$('selection').value};for(let id of ['minutes','max_clips','start','end','layout','browser','profile','cookies'])if($(id))body[id]=id==='cookies'?cleanCookies($(id).value):$(id).value;if(sourceMode==='upload')Object.assign(body,upload);let r=await fetch('/api/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});let data=await r.json();if(!r.ok)throw Error(data.error);await refresh(true);$('jobs').scrollIntoView({behavior:'smooth',block:'start'})}catch(e){$('error').textContent=e.message}finally{$('create').disabled=false;$('create').textContent='✂  Generate clips'}};
-health();refresh();setInterval(()=>refresh(),3000);
+
+
+const macCode=new URLSearchParams(location.hash.slice(1)).get('mac');
+async function showMacConnection(){
+    const notice=$('macConnection');
+    try{
+        const response=await fetch('/api/health');
+        if(!response.ok)return;
+        const state=await response.json();
+        if(state.mac_paired){
+            notice.hidden=false;
+            notice.textContent=state.mac_online?'Mac connected · YouTube downloads run automatically on your Mac.':'Mac paired · waiting for the helper to connect.';
+        }
+    }catch{}
+}
+async function startStudio(){
+if(macCode){
+    history.replaceState(null,'',location.pathname+location.search);
+    const notice=$('macConnection');
+    notice.hidden=false;
+    notice.textContent='Connecting your Mac…';
+    await fetch('/api/mac/pair',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({code:macCode})})
+        .then(async response=>{
+            const result=await response.json();
+            if(!response.ok)throw Error(result.error);
+            await showMacConnection();
+        })
+        .catch(error=>{notice.textContent=error.message;});
+}
+await health();
+await refresh();
+await showMacConnection();
+setInterval(()=>refresh(),3000);
+setInterval(showMacConnection,6000);
+}
+startStudio();
