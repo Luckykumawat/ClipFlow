@@ -10,9 +10,9 @@ The `render.yaml` Blueprint requests only a **free** web service and a provider-
 2. Review the Blueprint: `plan: free`, one web service, no paid disks or databases. If free creation is unavailable, stop rather than choosing a paid plan.
 3. Deploy and wait for the build and health check.
 4. Open the exact `onrender.com` URL returned by Render.
-5. Sign in with username **clipflow** and the generated `APP_PASSWORD` from the service's Environment settings. Keep this password private.
+5. Open the app directly. The cloud profile uses public anonymous browser workspaces; no username or password is required.
 
-The app validates same-origin requests using `RENDER_EXTERNAL_URL`; its health check is public but projects and media require authentication. Browser-cookie YouTube login is disabled on network deployments. Uploading your own video avoids most hosted YouTube downloader blocks.
+The app validates same-origin requests using `RENDER_EXTERNAL_URL`; public visitors receive signed browser-session cookies, and project/media/deletion access is limited to that visitor's workspace. Browser-cookie YouTube login is disabled on network deployments. Uploading your own video avoids most hosted YouTube downloader blocks.
 
 ### Free profile limits
 
@@ -23,7 +23,7 @@ The app validates same-origin requests using `RENDER_EXTERNAL_URL`; its health c
 - Portrait exports at 720×1280, square at 720×720. The desktop profile remains higher resolution.
 - The free service has limited CPU and RAM. Expect slow generation and cold starts. Long recordings and production throughput need more resources.
 - Render free services sleep when idle and may restart. **Uploads, transcripts, clip files and the project library are ephemeral. Download results promptly.** The repository and model image remain available independently of your Mac.
-- The app is a password-protected single-owner workspace. It does not implement multiple user accounts or shared projects.
+- The app is public with isolated anonymous browser workspaces. It does not implement registered user accounts or cross-browser account recovery. Keep cookies enabled and download results promptly.
 - No paid resources are requested by the Blueprint. Provider quotas, eligibility and billing policies can change. Do not enable paid upgrades to bypass a failed free deployment.
 
 The GitHub workflow builds this image and exercises an actual speech → highlight → caption → tracked crop → ZIP workflow with a 512 MB container memory cap. Check the latest run; this is a validation step, not a deployment to Render. It uses one CPU for test turnaround, so it does not predict free-server processing speed.

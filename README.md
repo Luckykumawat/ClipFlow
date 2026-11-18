@@ -67,3 +67,9 @@ The workspace storage panel shows app files, originals, generated MP4 clips and 
 Each completed or failed project provides **Delete original video** (keeps clips, captions and transcript) and **Delete project** (removes the project and its files). Download results first. Both operations require a permanent-deletion confirmation. Active/queued projects cannot be deleted. An original used by another active project cannot be removed. Deleting a project preserves a shared uploaded source until the final referencing project is removed; explicitly deleting a shared original removes that source for all referencing projects while keeping all their clips.
 
 Deletion does not affect copies already downloaded to your device. The storage panel refreshes periodically and immediately after deletion; use **Refresh storage** for an on-demand update.
+
+## Public access
+
+The cloud profile opens without a username or password by default. `PUBLIC_ACCESS=1` enables anonymous browser workspaces; `PUBLIC_ACCESS=0` keeps the previous single-owner Basic authentication mode. Every browser receives an HttpOnly, SameSite signed session cookie. Its uploads, projects, storage inventory, downloads and deletion endpoints are isolated from other browser sessions. Existing private legacy projects are not made public. The session-signing key is generated independently of the old application password.
+
+This is anonymous access, not an account system: clearing cookies, changing browsers or a free-server restart can make the workspace unavailable. Download results promptly. Visitors share one processing queue and the same free-server compute and disk capacity. No unlimited capacity or uptime is promised.

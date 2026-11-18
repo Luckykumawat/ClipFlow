@@ -14,7 +14,7 @@ jobs:
       - name: Build free cloud profile with cached models
         run: docker build -f Dockerfile.cloud -t clipflow:test .
       - name: Run with 512 MB RAM
-        run: docker run -d --name clipflow --memory=512m --memory-swap=512m --cpus=1 -p 8765:8765 -e APP_USER=clipflow -e APP_PASSWORD=ci-only-disposable-password123 clipflow:test
+        run: docker run -d --name clipflow --memory=512m --memory-swap=512m --cpus=1 -p 8765:8765 -e PUBLIC_ACCESS=0 -e APP_USER=clipflow -e APP_PASSWORD=ci-only-disposable-password123 clipflow:test
       - name: Wait for health
         run: |
           for attempt in $(seq 1 60); do
@@ -35,6 +35,8 @@ jobs:
           docker exec clipflow python /app/large_upload.py
           docker cp tests/storage_management.py clipflow:/app/storage_management.py
           docker exec clipflow python /app/storage_management.py
+          docker cp tests/public_sessions.py clipflow:/app/public_sessions.py
+          docker exec -e PUBLIC_ACCESS=1 clipflow python /app/public_sessions.py
       - name: Container diagnostics
         if: always()
         run: |

@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-import json, math, os, subprocess, threading, uuid, mimetypes, base64, hmac, shutil, zipfile, tempfile
+import json, math, os, subprocess, threading, uuid, mimetypes, base64, hmac, shutil, zipfile, tempfile, secrets, hashlib
 from pathlib import Path
 from urllib.parse import urlparse, unquote, parse_qs
+from http.cookies import SimpleCookie
 import sys, importlib.util, re
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
@@ -10,13 +11,14 @@ ROOT=Path(__file__).resolve().parent
 DATA=Path(os.environ.get('DATA_DIR',str(ROOT/'data'))); DATA.mkdir(parents=True,exist_ok=True)
 PORT=int(os.environ.get('PORT','8765'))
 CLOUD_LITE=os.environ.get('CLOUD_LITE')=='1'
+PUBLIC_ACCESS=os.environ.get('PUBLIC_ACCESS','1' if CLOUD_LITE else '0')=='1'
 MAX_UPLOAD=int(os.environ.get('MAX_UPLOAD_BYTES','0'))
 MAX_SOURCE_SECONDS=0
 PUBLIC_ORIGIN=os.environ.get('PUBLIC_ORIGIN') or os.environ.get('RENDER_EXTERNAL_URL') or f'http://127.0.0.1:{PORT}'
 APP_USER=os.environ.get('APP_USER','')
 APP_PASSWORD=os.environ.get('APP_PASSWORD','')
 BIND=os.environ.get('BIND_HOST','127.0.0.1')
-if BIND!='127.0.0.1' and (not APP_USER or len(APP_PASSWORD)<20):
+if not PUBLIC_ACCESS and BIND!='127.0.0.1' and (not APP_USER or len(APP_PASSWORD)<20):
     raise RuntimeError('Network deployment requires APP_USER and APP_PASSWORD of at least 20 characters')
 LOCK=threading.RLock()
 def load():
@@ -28,6 +30,22 @@ for j in JOBS:
 def save():
     with LOCK:
         p=DATA/'jobs.tmp'; p.write_text(json.dumps(JOBS)); p.replace(DATA/'jobs.json')
+SESSION_KEY_FILE=DATA/'.session-secret'
+if PUBLIC_ACCESS:
+    if not SESSION_KEY_FILE.exists():
+        with SESSION_KEY_FILE.open('xb') as secret_file:secret_file.write(secrets.token_bytes(32))
+        SESSION_KEY_FILE.chmod(0o600)
+    SESSION_KEY=SESSION_KEY_FILE.read_bytes()
+else:SESSION_KEY=b''
+
+def workspace(owner=''):
+    if not owner:return DATA
+    if not re.fullmatch(r'[a-f0-9]{32}',owner):raise ValueError('Invalid workspace')
+    path=DATA/'visitors'/owner;path.mkdir(parents=True,exist_ok=True);return path
+
+def public_job(job):
+    return {key:value for key,value in job.items() if key!='owner'}
+
 def run(args):
     env=os.environ.copy()
     if args[0]=='yt-dlp':
@@ -58,12 +76,12 @@ def friendly_error(error, browser=''):
 SEM=threading.Semaphore(1)
 def process(job):
     with SEM:
-        folder=DATA/job['id']; folder.mkdir(exist_ok=True)
+        data=workspace(job.get('owner',''));folder=data/job['id']; folder.mkdir(exist_ok=True)
         try:
             def progress(status, detail):
                 job.update(status=status,detail=detail); save()
             if job.get('upload'):
-                source=DATA/'uploads'/job['upload']
+                source=data/'uploads'/job['upload']
                 if not source.is_file(): raise ValueError('Uploaded video is missing')
             else:
                 progress('downloading','Downloading source video…')
@@ -120,7 +138,30 @@ def process(job):
             job.update(status='ready',detail='Export complete'); save()
         except Exception as e: job.update(status='failed',error=friendly_error(e,job.get('browser',''))); save()
 class Handler(BaseHTTPRequestHandler):
+    def visible_jobs(self):
+        return [j for j in JOBS if j.get('owner','')==self.owner]
+    def end_headers(self):
+        if PUBLIC_ACCESS:
+            self.send_header('Cache-Control','private, no-store')
+            self.send_header('Vary','Cookie')
+        if getattr(self,'session_cookie',None):self.send_header('Set-Cookie',self.session_cookie)
+        super().end_headers()
     def authorized(self):
+        self.owner='';self.session_cookie=None;self.data=DATA
+        if PUBLIC_ACCESS:
+            cookies=SimpleCookie()
+            try:cookies.load(self.headers.get('Cookie',''))
+            except Exception:pass
+            token=cookies.get('clipflow_workspace')
+            owner,separator,signature=(token.value if token else '').partition('.')
+            expected=hmac.new(SESSION_KEY,owner.encode(),hashlib.sha256).hexdigest()
+            if not (re.fullmatch(r'[a-f0-9]{32}',owner) and separator and hmac.compare_digest(signature,expected)):
+                owner=uuid.uuid4().hex
+                signature=hmac.new(SESSION_KEY,owner.encode(),hashlib.sha256).hexdigest()
+                secure='; Secure' if PUBLIC_ORIGIN.startswith('https://') else ''
+                self.session_cookie=f'clipflow_workspace={owner}.{signature}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax'+secure
+            self.owner=owner;self.data=workspace(owner)
+            return True
         if not APP_PASSWORD: return True
         expected='Basic '+base64.b64encode((APP_USER+':'+APP_PASSWORD).encode()).decode()
         if hmac.compare_digest(self.headers.get('Authorization',''),expected): return True
@@ -132,28 +173,30 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorized(): return
         path=unquote(urlparse(self.path).path)
         if path=='/api/jobs':
-            with LOCK:return self.respond(200,JOBS)
+            with LOCK:return self.respond(200,[public_job(j) for j in self.visible_jobs()])
         if path=='/api/storage':
-            with LOCK:return self.respond(200,storage.inventory(DATA,JOBS))
+            with LOCK:return self.respond(200,storage.inventory(self.data,self.visible_jobs()))
         if path=='/api/health':
-            return self.respond(200,{'ai':all(importlib.util.find_spec(m) is not None for m in ('faster_whisper','fastembed','cv2','PIL')),'face_model':(ROOT/'models'/'face_detection_yunet_2023mar.onnx').is_file(),'cloud_lite':CLOUD_LITE,'upload_limit':MAX_UPLOAD,'max_source_seconds':MAX_SOURCE_SECONDS,'max_clips':None})
+            return self.respond(200,{'ai':all(importlib.util.find_spec(m) is not None for m in ('faster_whisper','fastembed','cv2','PIL')),'face_model':(ROOT/'models'/'face_detection_yunet_2023mar.onnx').is_file(),'cloud_lite':CLOUD_LITE,'upload_limit':MAX_UPLOAD,'max_source_seconds':MAX_SOURCE_SECONDS,'max_clips':None,'public_access':PUBLIC_ACCESS})
         if path.startswith('/api/bundle/'):
-            job=next((j for j in JOBS if j['id']==path.rsplit('/',1)[-1]),None)
+            job=next((j for j in self.visible_jobs() if j['id']==path.rsplit('/',1)[-1]),None)
             if not job or job['status']!='ready': return self.respond(404,{'error':'Completed project not found'})
             with tempfile.TemporaryFile() as bundle:
                 with LOCK, zipfile.ZipFile(bundle,'w',compression=zipfile.ZIP_STORED) as archive:
                     if job not in JOBS:return self.respond(404,{'error':'Project was deleted'})
                     for clip in job['clips']:
-                        archive.write(DATA/job['id']/clip['name'],clip['name'])
-                        if clip.get('srt'): archive.write(DATA/job['id']/clip['srt'],clip['srt'])
-                    transcript=DATA/job['id']/'transcript.json'
+                        archive.write(self.data/job['id']/clip['name'],clip['name'])
+                        if clip.get('srt'): archive.write(self.data/job['id']/clip['srt'],clip['srt'])
+                    transcript=self.data/job['id']/'transcript.json'
                     if transcript.is_file():archive.write(transcript,'transcript.json')
                 size=bundle.tell(); bundle.seek(0)
                 self.send_response(200); self.send_header('Content-Type','application/zip'); self.send_header('Content-Disposition','attachment; filename="clipflow-clips.zip"'); self.send_header('Content-Length',str(size)); self.end_headers()
                 shutil.copyfileobj(bundle,self.wfile)
             return
         if path.startswith('/media/'):
-            file=(DATA/path.removeprefix('/media/')).resolve(); base=DATA.resolve()
+            parts=path.removeprefix('/media/').split('/')
+            if PUBLIC_ACCESS and (len(parts)!=2 or not re.fullmatch(r'[a-f0-9]{32}',parts[0]) or not any(j['id']==parts[0] for j in self.visible_jobs())):return self.respond(404,{'error':'Not found'})
+            file=(self.data/path.removeprefix('/media/')).resolve(); base=self.data.resolve()
             if base not in file.parents or not ((file.suffix in ('.mp4','.srt') and file.name.startswith('clip-')) or file.name=='transcript.json'): return self.respond(404,{'error':'Not found'})
         else: file=ROOT/'web'/('index.html' if path=='/' else path.lstrip('/'))
         if (ROOT/'web').resolve() not in file.resolve().parents and not path.startswith('/media/'): return self.respond(404,{'error':'Not found'})
@@ -190,11 +233,11 @@ class Handler(BaseHTTPRequestHandler):
                 size=int(self.headers.get('Content-Length','0'))
                 if size<1:raise ValueError('Choose a non-empty video file')
                 if MAX_UPLOAD and size>MAX_UPLOAD:raise ValueError(f'This server is configured for uploads up to {MAX_UPLOAD//1024**2} MB')
-                if size>shutil.disk_usage(DATA).free:return self.respond(507,{'error':'Not enough free disk space for this upload. Download and remove old files or use a server with more storage.'})
+                if size>shutil.disk_usage(self.data).free:return self.respond(507,{'error':'Not enough free disk space for this upload. Download and remove old files or use a server with more storage.'})
                 name=parse_qs(urlparse(self.path).query).get('name',['video.mp4'])[0]
                 suffix=Path(name).suffix.lower()
                 if suffix not in ('.mp4','.mov','.mkv','.webm','.m4v'):raise ValueError('Use MP4, MOV, MKV, WebM or M4V')
-                folder=DATA/'uploads';folder.mkdir(exist_ok=True);token=uuid.uuid4().hex+suffix
+                folder=self.data/'uploads';folder.mkdir(exist_ok=True);token=uuid.uuid4().hex+suffix
                 target=folder/token;remaining=size
                 try:
                     with target.open('wb') as output:
@@ -217,10 +260,12 @@ class Handler(BaseHTTPRequestHandler):
                 body=json.loads(self.rfile.read(length))
                 if not isinstance(body,dict) or body.get('confirm') is not True:raise ValueError('Explicit deletion confirmation is required')
                 with LOCK:
-                    job=next((j for j in JOBS if j['id']==match.group(1)),None)
+                    job=next((j for j in self.visible_jobs() if j['id']==match.group(1)),None)
                     if not job:return self.respond(404,{'error':'Project not found'})
-                    code,result=storage.delete(DATA,JOBS,job,body.get('action'))
-                    if code==200:save()
+                    code,result=storage.delete(self.data,self.visible_jobs(),job,body.get('action'))
+                    if code==200:
+                        if result['action']=='project':JOBS.remove(job)
+                        save()
                     return self.respond(code,result)
             except (ValueError,TypeError) as e:return self.respond(400,{'error':str(e)})
             except OSError:return self.respond(500,{'error':'Some files could not be deleted. Refresh storage and try again.'})
@@ -232,14 +277,14 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(body,dict):raise ValueError('Expected a JSON object')
             url=str(body.get('url','')).strip(); parsed=urlparse(url)
             upload=body.get('upload','')
-            if upload and (not isinstance(upload,str) or Path(upload).name!=upload or not (DATA/'uploads'/upload).is_file()): raise ValueError('Upload not found')
+            if upload and (not isinstance(upload,str) or Path(upload).name!=upload or not (self.data/'uploads'/upload).is_file()): raise ValueError('Upload not found')
             if not upload and (parsed.scheme!='https' or parsed.hostname not in ('youtube.com','www.youtube.com','m.youtube.com','youtu.be')): raise ValueError('Enter a valid HTTPS YouTube video URL')
             seconds=float(body['minutes'])*60
             if not math.isfinite(seconds) or not 1<=seconds<=3600: raise ValueError('Clip length must be between 1 second and 60 minutes')
             if not body.get('rights'): raise ValueError('Confirm that you can use this video')
             browser=body.get('browser','')
             if browser not in ('','chrome','firefox','safari','edge','brave'): raise ValueError('Invalid browser selection')
-            if browser and BIND!='127.0.0.1': raise ValueError('Browser login is only available in local mode')
+            if browser and (PUBLIC_ACCESS or BIND!='127.0.0.1'): raise ValueError('Browser login is only available in local mode')
             profile=str(body.get('profile','')).strip()
             if profile and (len(profile)>60 or not all(c.isalnum() or c in ' _-' for c in profile)): raise ValueError('Enter a profile folder such as Default or Profile 1')
             layout=body.get('layout','original')
@@ -258,11 +303,11 @@ class Handler(BaseHTTPRequestHandler):
             if len(topic)>500:raise ValueError('Topic must be 500 characters or fewer')
             if selection=='highlights' or captions or tracking:
                 if not all(importlib.util.find_spec(m) is not None for m in ('faster_whisper','fastembed','cv2','PIL')):raise ValueError('Start with Start.command to use the AI environment. Run Setup AI.command if needed.')
-            job=dict(upload=upload,selection=selection,model=model,language=language,caption_style=style,captions=captions,tracking=tracking,topic=topic,layout=layout,start=start,end=end,max_clips=max_clips,profile=profile,browser=browser,id=uuid.uuid4().hex,url=url,seconds=seconds,title=str(body.get('title','Uploaded video'))[:200] if upload else 'New YouTube video',status='queued',clips=[],total=0)
+            job=dict(owner=self.owner,upload=upload,selection=selection,model=model,language=language,caption_style=style,captions=captions,tracking=tracking,topic=topic,layout=layout,start=start,end=end,max_clips=max_clips,profile=profile,browser=browser,id=uuid.uuid4().hex,url=url,seconds=seconds,title=str(body.get('title','Uploaded video'))[:200] if upload else 'New YouTube video',status='queued',clips=[],total=0)
             with LOCK:
-                if upload and not (DATA/'uploads'/upload).is_file():raise ValueError('This original was deleted. Choose the file and upload it again.')
+                if upload and not (self.data/'uploads'/upload).is_file():raise ValueError('This original was deleted. Choose the file and upload it again.')
                 JOBS.insert(0,job);save()
-            threading.Thread(target=process,args=(job,),daemon=True).start(); return self.respond(201,job)
+            threading.Thread(target=process,args=(job,),daemon=True).start(); return self.respond(201,public_job(job))
         except (ValueError,KeyError,TypeError,OverflowError) as e: return self.respond(400,{'error':str(e)})
 if __name__=='__main__':
     server=ThreadingHTTPServer((BIND,PORT),Handler)
