@@ -6,6 +6,7 @@ COPY requirements-ai.txt /tmp/requirements-ai.txt
 ARG CLOUD_YTDLP_VERSION=2026.11.17.232707.dev0
 RUN pip install --no-cache-dir "yt-dlp[default,curl-cffi,deno]==${CLOUD_YTDLP_VERSION}" -r /tmp/requirements-ai.txt
 ENV CLIPFLOW_YOUTUBE_BUILD=${CLOUD_YTDLP_VERSION}
+ENV CLIPFLOW_SHARED_MAC_DIGEST=c04580c11d7b72768bd08f7c6636cfeba742600227dbcfa7c59061f9d780b3f4
 RUN useradd --create-home --uid 10001 clipflow
 WORKDIR /app
 COPY --chown=clipflow:clipflow server.py storage.py /app/

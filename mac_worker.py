@@ -35,7 +35,7 @@ def request(token, path, lease=None, source=None, title=None):
     return int(status),json.loads(raw)
 
 
-def job_loop(token):
+def job_loop(token, shared=False):
     paired=False
     while True:
         try:
@@ -46,16 +46,25 @@ def job_loop(token):
                 paired=False
             elif status==200:
                 if not paired:
-                    print('Render workspace paired.',flush=True)
+                    print('Shared Render downloader connected.' if shared else 'Render workspace paired.',flush=True)
                 paired=True
                 if result['job']:
-                    transfer(token,result['job'])
+                    transfer(token,result['job'],shared)
         except (OSError,ValueError,subprocess.SubprocessError) as error:
             print(f'Could not contact Render ({type(error).__name__}). Retrying.',flush=True)
         time.sleep(4)
 
 
-def transfer(token, job):
+def heartbeat(token):
+    while True:
+        try:
+            request(token,'/api/mac/heartbeat')
+        except (OSError,ValueError,subprocess.SubprocessError):
+            pass
+        time.sleep(8)
+
+
+def transfer(token, job, shared=False):
     video_id=job['video_id']
     if not re.fullmatch(r'[A-Za-z0-9_-]{11}',video_id):
         return
@@ -65,12 +74,13 @@ def transfer(token, job):
     try:
         with tempfile.TemporaryDirectory(prefix='clipflow-mac-') as scratch:
             folder=Path(scratch)
+            limits=['--match-filter','duration <= 1800 & !is_live','--max-filesize','256M'] if shared else []
             run=subprocess.run([
                 sys.executable,'-m','yt_dlp','--ignore-config','--no-update','--no-playlist',
                 '--socket-timeout','20','--retries','2','--js-runtimes','node',
                 '--print','after_move:filepath','--print','before_dl:title',
                 '-f','bv*[height<=720][vcodec^=avc1]+ba[ext=m4a]/b[height<=720][ext=mp4]/bv*[height<=720]+ba/b[height<=720]',
-                '--merge-output-format','mp4','--remux-video','mp4',
+                '--merge-output-format','mp4','--remux-video','mp4',*limits,
                 '-o',str(folder/'source.%(ext)s'),'--','https://www.youtube.com/watch?v='+video_id
             ],capture_output=True,text=True,timeout=600)
             if run.returncode:
@@ -78,6 +88,8 @@ def transfer(token, job):
             source=folder/'source.mp4'
             if not source.is_file():
                 raise RuntimeError('The downloader produced no MP4')
+            if shared and source.stat().st_size>256*1024**2:
+                raise RuntimeError('Public downloads are limited to 256 MB')
             title=run.stdout.splitlines()[0] if run.stdout.splitlines() else ''
             print(f'Sending {source.stat().st_size/1024/1024:.1f} MB to Render.',flush=True)
             status,result=request(token,endpoint+'/source',lease,source,title)
@@ -104,9 +116,16 @@ def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--state',type=Path,default=Path(__file__).resolve().parent/'data'/'render-mac.key')
     parser.add_argument('--port',type=int,default=18780)
+    parser.add_argument('--shared',action='store_true',help='Serve the public Render download queue')
     args=parser.parse_args()
     args.state.parent.mkdir(parents=True,exist_ok=True)
+    if args.shared and not args.state.is_file():
+        parser.error('Use --state with the authorized shared worker key')
     token=read_or_create_token(args.state)
+    if args.shared:
+        threading.Thread(target=heartbeat,args=(token,),daemon=True).start()
+        job_loop(token,shared=True)
+        return
     link=html.escape(RENDER+'/#mac='+token,quote=True)
 
     class PairPage(BaseHTTPRequestHandler):

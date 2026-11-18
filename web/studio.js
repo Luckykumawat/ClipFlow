@@ -66,6 +66,11 @@ async function showMacConnection(){
         if(state.mac_paired){
             notice.hidden=false;
             notice.textContent=state.mac_online?'Mac connected · YouTube downloads run automatically on your Mac.':'Mac paired · waiting for the helper to connect.';
+        }else if(state.shared_mac){
+            notice.hidden=false;
+            notice.textContent=state.shared_mac_online
+                ? 'YouTube downloads are handled automatically. Even Cuts supports source videos up to 30 minutes and up to 30 clips per job.'
+                : 'The YouTube download service is offline. Try again later.';
         }
     }catch{}
 }
