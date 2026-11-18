@@ -43,8 +43,14 @@ def workspace(owner=''):
     if not re.fullmatch(r'[a-f0-9]{32}',owner):raise ValueError('Invalid workspace')
     path=DATA/'visitors'/owner;path.mkdir(parents=True,exist_ok=True);return path
 
+def can_retry_source(job):
+    return (job['status']=='failed' and not job.get('upload') and
+            (job.get('source_retry') or job.get('detail')=='Downloading source video…'))
+
+
 def public_job(job):
-    return {key:value for key,value in job.items() if key!='owner'}
+    return {**{key:value for key,value in job.items() if key!='owner'},
+            'source_retry':bool(can_retry_source(job))}
 
 def run(args):
     env=os.environ.copy()
@@ -60,7 +66,9 @@ def run(args):
         else:
             raise RuntimeError('YouTube downloader is missing. Install the dependencies from requirements-ai.txt or upload a video.')
         if local.exists(): env['PYTHONPATH']=str(ROOT/'vendor')
-        base=[*cmd,'--ignore-config','--no-update','--socket-timeout','20']
+        base=[*cmd,'--ignore-config','--no-update','--socket-timeout','12' if CLOUD_LITE else '20']
+        if CLOUD_LITE:
+            base.extend(['--extractor-retries','0','--retries','2','--fragment-retries','2'])
         try:
             import nodejs_wheel.executable as nw
             nw_node=Path(nw.ROOT_DIR)/('node.exe' if os.name=='nt' else 'bin/node')
@@ -237,7 +245,10 @@ def process(job, cookies=''):
                             partial.unlink(missing_ok=True)
                         if login:
                             run(['yt-dlp',*login,*dl_tail])
-                        elif importlib.util.find_spec('pytubefix') is not None:
+                        elif importlib.util.find_spec('pytubefix') is not None and not (
+                            CLOUD_LITE and any(marker in str(download_error).lower() for marker in
+                                              ('failed to extract any player response', 'sign in to confirm', 'blocked by youtube'))
+                        ):
                             try:
                                 download_with_pytubefix(job['url'],folder,job)
                             except RuntimeError as fallback_error:
@@ -273,7 +284,9 @@ def process(job, cookies=''):
                 run(['ffmpeg','-nostdin','-v','error','-y','-ss',str(start),'-i',str(source),'-t',str(length),'-map','0:v:0','-map','0:a?',*vf,'-c:v','libx264','-threads','1' if CLOUD_LITE else '0','-preset','ultrafast' if CLOUD_LITE else 'fast','-crf','23','-c:a','aac','-movflags','+faststart',str(folder/name)])
                 job['clips'].append(dict(name=name,start=start,duration=length,title=window.get('title', f'Clip {i+1}'),relevance=window.get('relevance'),reason=window.get('reason',''))); save()
             job.update(status='ready',detail='Export complete'); save()
-        except Exception as e: job.update(status='failed',error=friendly_error(e,job.get('browser',''))); save()
+        except Exception as e:
+            job.update(source_retry=job['status']=='downloading',status='failed',error=friendly_error(e,job.get('browser','')))
+            save()
 class Handler(BaseHTTPRequestHandler):
     def visible_jobs(self):
         return [j for j in JOBS if j.get('owner','')==self.owner]
@@ -365,6 +378,40 @@ class Handler(BaseHTTPRequestHandler):
     def do_POST(self):
         if not self.authorized(): return
         if self.headers.get('Origin') not in (None,PUBLIC_ORIGIN,'http://localhost:8765'): return self.respond(403,{'error':'Invalid origin'})
+        retry = re.fullmatch(r'/api/jobs/([a-f0-9]{32})/retry-upload', urlparse(self.path).path)
+        if retry:
+            try:
+                length = int(self.headers.get('Content-Length','0'))
+                if not 1 <= length <= 4096:
+                    raise ValueError('Invalid retry request')
+                body = json.loads(self.rfile.read(length))
+                upload = body.get('upload') if isinstance(body, dict) else None
+                if not isinstance(upload, str) or not re.fullmatch(r'[a-f0-9]{32}\.(mp4|mov|mkv|webm|m4v)', upload):
+                    raise ValueError('Choose a saved video file')
+                with LOCK:
+                    job = next((j for j in self.visible_jobs() if j['id']==retry[1]), None)
+                    if job is None:
+                        return self.respond(404, {'error':'Project not found'})
+                    if not can_retry_source(job):
+                        return self.respond(409, {'error':'This project cannot retry its source import'})
+                    if not (self.data/'uploads'/upload).is_file():
+                        raise ValueError('Upload not found in this workspace')
+                    for old_source in (self.data/job['id']).glob('source.*'):
+                        old_source.unlink(missing_ok=True)
+                    title = body.get('title')
+                    if isinstance(title, str) and title.strip():
+                        job['title'] = title.strip()[:200]
+                    job.update(upload=upload, status='queued', detail='Video uploaded. Waiting to generate clips…')
+                    job.pop('error', None)
+                    job.pop('source_retry', None)
+                    save()
+                    result = public_job(job)
+                threading.Thread(target=process,args=(job,),daemon=True).start()
+                return self.respond(202, result)
+            except (ValueError, TypeError) as error:
+                return self.respond(400, {'error':str(error)})
+            except OSError:
+                return self.respond(500, {'error':'Could not prepare the project for retry'})
         if urlparse(self.path).path=='/api/upload':
             try:
                 size=int(self.headers.get('Content-Length','0'))
