@@ -3,18 +3,15 @@ ARG CLOUD_LITE=1
 ENV CLOUD_LITE=${CLOUD_LITE} OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates nodejs && rm -rf /var/lib/apt/lists/*
 COPY requirements-ai.txt /tmp/requirements-ai.txt
-RUN pip install --no-cache-dir -U "yt-dlp[default,curl-cffi]" -r /tmp/requirements-ai.txt
+RUN pip install --no-cache-dir -U "yt-dlp[default,curl-cffi,deno]" pytubefix -r /tmp/requirements-ai.txt
 RUN useradd --create-home --uid 10001 clipflow
 WORKDIR /app
-COPY --chown=clipflow:clipflow server.py /app/server.py
-COPY --chown=clipflow:clipflow ai_engine.py setup_ai.py storage.py /app/
+COPY --chown=clipflow:clipflow server.py storage.py /app/
 COPY --chown=clipflow:clipflow assets /app/assets
 COPY --chown=clipflow:clipflow web /app/web
-RUN pip install --no-cache-dir -U "yt-dlp[default,curl-cffi]"
 RUN mkdir /app/models && chown clipflow:clipflow /app/models
 RUN mkdir /data && chown clipflow:clipflow /data
 USER clipflow
-RUN if [ "$CLOUD_LITE" = "1" ]; then python setup_ai.py; fi
 ENV BIND_HOST=0.0.0.0 DATA_DIR=/data
 EXPOSE 8765
 CMD ["python", "server.py"]

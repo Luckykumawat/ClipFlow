@@ -9,8 +9,8 @@ import sys
 from functools import lru_cache
 
 ROOT = Path(__file__).resolve().parent
-MODELS = ROOT / 'models'
-MODELS.mkdir(exist_ok=True)
+MODELS = Path(os.environ.get('CLIPFLOW_MODELS_DIR', ROOT / 'models')).resolve()
+MODELS.mkdir(parents=True, exist_ok=True)
 os.environ.setdefault('HF_HOME', str(MODELS / 'huggingface'))
 os.environ.setdefault('HF_HUB_DISABLE_XET', '1')
 os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
@@ -100,7 +100,7 @@ def select_highlights(segments, start, end, seconds, count, topic='', progress=l
     import numpy as np
     from fastembed import TextEmbedding
     options = candidates(segments, start, end, seconds)
-    if not options: raise ValueError('No clear speech found in this range. Try another range or use evenly spaced clips.')
+    if not options: raise ValueError('No clear speech found in this range.')
     progress('analyzing', 'Ranking speech with a local multilingual semantic model…')
     if EMBEDDER is None:
         EMBEDDER = TextEmbedding(EMBED_MODEL, cache_dir=str(MODELS / 'embeddings'), threads=None if CLOUD_LITE else min(4, os.cpu_count() or 2), **({'mmap':True} if CLOUD_LITE else {}))

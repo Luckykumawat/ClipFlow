@@ -8,6 +8,5 @@ if [[ ! -x .venv/bin/python ]]; then
     python3 -m venv .venv
   fi
 fi
-.venv/bin/python -m pip install -r requirements-ai.txt
-.venv/bin/python setup_ai.py
-printf '\nAI setup complete. Open Start.command to launch Clipflow.\n'
+.venv/bin/python -m pip install -r requirements-ai.txt 'faster-whisper==1.2.1' 'fastembed==0.9.1'
+printf '\nAI setup complete. Open Start.command to launch ClipFlow. The first AI job downloads the speech and ranking models.\n'

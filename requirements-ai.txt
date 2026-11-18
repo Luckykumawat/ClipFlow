@@ -1,5 +1,2 @@
-faster-whisper==1.2.1
-fastembed==0.9.1
-opencv-python-headless==5.0.0.93
-Pillow==13.0.0
-yt-dlp[default,curl-cffi]>=2026.10.26
+yt-dlp[default,curl-cffi,deno]>=2026.10.26
+pytubefix>=11.2.1
