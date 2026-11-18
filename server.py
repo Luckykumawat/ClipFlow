@@ -88,6 +88,41 @@ def friendly_error(error, browser=''):
     if 'sign in to confirm' in lower or 'failed to extract any player response' in lower or ' blocked by youtube' in lower:
         return 'YouTube blocked or rejected anonymous extraction from this server IP. Open "YouTube login options" and paste exported YouTube cookies.txt (or select your signed-in browser in local mode), or use "Upload video" instead. '+actual[-600:]
     return actual[-1600:]
+def normalize_cookies(raw):
+    text=str(raw or '').strip()
+    if not text: return ''
+    domains=('youtube','youtu.be','google','ytimg','ggpht')
+    lines=[]
+    if text.startswith('['):
+        try:
+            for c in json.loads(text):
+                if not isinstance(c,dict) or not c.get('name'): continue
+                dom=str(c.get('domain') or '.youtube.com').strip()
+                if any(d in dom.lower() for d in domains):
+                    flag='TRUE' if dom.startswith('.') else 'FALSE'
+                    path=str(c.get('path') or '/')
+                    sec='TRUE' if c.get('secure',True) else 'FALSE'
+                    exp=str(int(float(c.get('expirationDate') or c.get('expires') or 0)))
+                    lines.append(f'{dom}\t{flag}\t{path}\t{sec}\t{exp}\t{c["name"]}\t{c.get("value","")}')
+        except Exception: pass
+    if not lines and '\t' in text:
+        all_tab=[]
+        for raw_line in text.splitlines():
+            line=raw_line.strip()
+            if not line or (line.startswith('#') and not line.startswith('#HttpOnly_')): continue
+            parts=line.split('\t')
+            if len(parts)>=7:
+                dom=parts[0].removeprefix('#HttpOnly_').lower()
+                row='\t'.join(parts[:7]); all_tab.append(row)
+                if any(d in dom for d in domains): lines.append(row)
+        if not lines: lines=all_tab
+    if not lines:
+        for chunk in text.replace('\n',';').split(';'):
+            if '=' in chunk:
+                k,v=chunk.split('=',1); k,v=k.strip(),v.strip()
+                if k and not k.startswith('#'): lines.append(f'.youtube.com\tTRUE\t/\tTRUE\t0\t{k}\t{v}')
+    return '# Netscape HTTP Cookie File\n'+'\n'.join(lines)+'\n' if lines else ''
+
 SEM=threading.Semaphore(1)
 def process(job, cookies=''):
     with SEM:
@@ -100,12 +135,11 @@ def process(job, cookies=''):
                 if not source.is_file(): raise ValueError('Uploaded video is missing')
             else:
                 progress('downloading','Downloading source video…')
-                cookie_text=(cookies or os.environ.get('YOUTUBE_COOKIES','')).strip()
+                cookie_text=normalize_cookies(cookies or os.environ.get('YOUTUBE_COOKIES',''))
                 cookie_file=folder/'.cookies.txt'
                 try:
                     if cookie_text:
-                        header='' if cookie_text.startswith('# Netscape HTTP Cookie File') else '# Netscape HTTP Cookie File\n'
-                        with cookie_file.open('w',encoding='utf-8') as cf:cf.write(header+cookie_text+'\n')
+                        with cookie_file.open('w',encoding='utf-8') as cf:cf.write(cookie_text)
                         cookie_file.chmod(0o600)
                         login=['--cookies',str(cookie_file)]
                     elif job.get('browser'):
@@ -303,7 +337,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path!='/api/jobs': return self.respond(404,{'error':'Not found'})
         try:
             size=int(self.headers.get('Content-Length','0'))
-            if size<1 or size>65536: raise ValueError('Request too large')
+            if size<1 or size>16*1024*1024: raise ValueError('Request too large')
             body=json.loads(self.rfile.read(size))
             if not isinstance(body,dict):raise ValueError('Expected a JSON object')
             url=str(body.get('url','')).strip(); parsed=urlparse(url)
@@ -318,8 +352,7 @@ class Handler(BaseHTTPRequestHandler):
             if browser and (PUBLIC_ACCESS or BIND!='127.0.0.1'): raise ValueError('Browser login is only available in local mode')
             profile=str(body.get('profile','')).strip()
             if profile and (len(profile)>60 or not all(c.isalnum() or c in ' _-' for c in profile)): raise ValueError('Enter a profile folder such as Default or Profile 1')
-            cookies=str(body.get('cookies','')).strip()
-            if len(cookies)>49152: raise ValueError('Cookies text must be 48 KB or smaller')
+            cookies=normalize_cookies(body.get('cookies',''))
             layout=body.get('layout','original')
             if layout not in ('original','portrait','square','portrait-fit'): raise ValueError('Invalid output layout')
             start=float(body.get('start',0)); end=float(body.get('end') or 0); max_clips=int(body.get('max_clips',0))
