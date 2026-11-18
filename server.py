@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import json, math, os, subprocess, threading, uuid, mimetypes, base64, hmac, shutil, zipfile, tempfile, secrets, hashlib
 from pathlib import Path
+from contextlib import nullcontext
 from urllib.parse import urlparse, unquote, parse_qs
 from http.cookies import SimpleCookie
 import sys, importlib.util, re
@@ -87,7 +88,11 @@ def run(args):
                 attempts.append([*base,'--extractor-args','youtube:player_client=web_safari,mweb,android_vr,web_embedded,tv,ios','--impersonate','chrome',*tail])
         last_err=''
         for attempt in attempts:
-            p=subprocess.run(attempt,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+            try:
+                p=subprocess.run(attempt,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True,
+                                 timeout=120 if CLOUD_LITE else None)
+            except subprocess.TimeoutExpired as error:
+                raise RuntimeError('YouTube download timed out. Upload a saved video to continue.') from error
             if not p.returncode: return p.stdout
             last_err=p.stderr[-1600:] or 'Processing failed'
         raise RuntimeError(last_err)
@@ -214,8 +219,9 @@ def select_windows(job, source, folder, start, end, progress):
     ]
 
 SEM=threading.Semaphore(1)
+DOWNLOAD_SEM=threading.Semaphore(1)
 def process(job, cookies=''):
-    with SEM:
+    with (DOWNLOAD_SEM if not job.get('upload') else nullcontext()):
         data=workspace(job.get('owner',''));folder=data/job['id']; folder.mkdir(exist_ok=True)
         try:
             def progress(status, detail):
@@ -245,10 +251,7 @@ def process(job, cookies=''):
                             partial.unlink(missing_ok=True)
                         if login:
                             run(['yt-dlp',*login,*dl_tail])
-                        elif importlib.util.find_spec('pytubefix') is not None and not (
-                            CLOUD_LITE and any(marker in str(download_error).lower() for marker in
-                                              ('failed to extract any player response', 'sign in to confirm', 'blocked by youtube'))
-                        ):
+                        elif not CLOUD_LITE and importlib.util.find_spec('pytubefix') is not None:
                             try:
                                 download_with_pytubefix(job['url'],folder,job)
                             except RuntimeError as fallback_error:
@@ -267,23 +270,24 @@ def process(job, cookies=''):
                 sources=[p for p in folder.glob('source.*') if p.suffix not in ('.part','.ytdl','.json')]
                 if not sources: raise RuntimeError('No source video downloaded')
                 source=sources[0]
-            duration=float(run(['ffprobe','-v','error','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1',str(source)]))
-            offset=job.get('start',0)
-            end=min(duration,job.get('end') or duration)
-            if offset>=end: raise ValueError('Source start must be before the video end')
-            windows=select_windows(job,source,folder,offset,end,progress)
-            job.update(duration=duration,status='cutting',detail='Cutting video clips…',total=len(windows),clips=[]); save()
-            for i,window in enumerate(windows):
-                start=window['start']; length=window['duration']; name=f'clip-{i+1:03d}.mp4'
-                layout=job.get('layout','original')
-                filters={'portrait':'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1','square':'scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080,setsar=1','portrait-fit':"scale=w='trunc(iw*sar/2)*2':h=ih,setsar=1,scale=1080:1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1"}
-                if CLOUD_LITE:
-                    filters={key:value.replace('1080','720').replace('1920','1280') for key,value in filters.items()}
-                    filters['original']="scale=w='min(1280,iw)':h='min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2"
-                vf=['-vf',filters[layout]] if layout in filters else []
-                run(['ffmpeg','-nostdin','-v','error','-y','-ss',str(start),'-i',str(source),'-t',str(length),'-map','0:v:0','-map','0:a?',*vf,'-c:v','libx264','-threads','1' if CLOUD_LITE else '0','-preset','ultrafast' if CLOUD_LITE else 'fast','-crf','23','-c:a','aac','-movflags','+faststart',str(folder/name)])
-                job['clips'].append(dict(name=name,start=start,duration=length,title=window.get('title', f'Clip {i+1}'),relevance=window.get('relevance'),reason=window.get('reason',''))); save()
-            job.update(status='ready',detail='Export complete'); save()
+            with SEM:
+                duration=float(run(['ffprobe','-v','error','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1',str(source)]))
+                offset=job.get('start',0)
+                end=min(duration,job.get('end') or duration)
+                if offset>=end: raise ValueError('Source start must be before the video end')
+                windows=select_windows(job,source,folder,offset,end,progress)
+                job.update(duration=duration,status='cutting',detail='Cutting video clips…',total=len(windows),clips=[]); save()
+                for i,window in enumerate(windows):
+                    start=window['start']; length=window['duration']; name=f'clip-{i+1:03d}.mp4'
+                    layout=job.get('layout','original')
+                    filters={'portrait':'scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920,setsar=1','square':'scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080,setsar=1','portrait-fit':"scale=w='trunc(iw*sar/2)*2':h=ih,setsar=1,scale=1080:1920:force_original_aspect_ratio=decrease:force_divisible_by=2,pad=1080:1920:(ow-iw)/2:(oh-ih)/2,setsar=1"}
+                    if CLOUD_LITE:
+                        filters={key:value.replace('1080','720').replace('1920','1280') for key,value in filters.items()}
+                        filters['original']="scale=w='min(1280,iw)':h='min(1280,ih)':force_original_aspect_ratio=decrease:force_divisible_by=2"
+                    vf=['-vf',filters[layout]] if layout in filters else []
+                    run(['ffmpeg','-nostdin','-v','error','-y','-ss',str(start),'-i',str(source),'-t',str(length),'-map','0:v:0','-map','0:a?',*vf,'-c:v','libx264','-threads','1' if CLOUD_LITE else '0','-preset','ultrafast' if CLOUD_LITE else 'fast','-crf','23','-c:a','aac','-movflags','+faststart',str(folder/name)])
+                    job['clips'].append(dict(name=name,start=start,duration=length,title=window.get('title', f'Clip {i+1}'),relevance=window.get('relevance'),reason=window.get('reason',''))); save()
+                job.update(status='ready',detail='Export complete'); save()
         except Exception as e:
             job.update(source_retry=job['status']=='downloading',status='failed',error=friendly_error(e,job.get('browser','')))
             save()
