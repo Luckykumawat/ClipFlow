@@ -50,10 +50,25 @@ def run(args):
     env=os.environ.copy()
     if args[0]=='yt-dlp':
         local=ROOT/'vendor'/'bin'/'yt-dlp'
-        args=[str(local) if local.exists() else 'yt-dlp','--ignore-config',*args[1:]]
+        cmd=[str(local)] if local.exists() else ([shutil.which('yt-dlp')] if shutil.which('yt-dlp') else [sys.executable,'-m','yt_dlp'])
         if local.exists(): env['PYTHONPATH']=str(ROOT/'vendor')
+        base=[*cmd,'--ignore-config','--no-update']
         node=shutil.which('node')
-        if node: args[1:1]=['--js-runtimes','node:'+node]
+        if node: base.extend(['--js-runtimes','node:'+node])
+        tail=args[1:]
+        if '--extractor-args' in tail:
+            attempts=[[*base,*tail]]
+        else:
+            clients='youtube:player_client=default,web_safari,mweb,android_vr,web_embedded'
+            attempts=[[*base,'--extractor-args',clients,*tail]]
+            if importlib.util.find_spec('curl_cffi') is not None:
+                attempts.append([*base,'--extractor-args','youtube:player_client=web_safari,mweb,android_vr,web_embedded,tv,ios','--impersonate','chrome',*tail])
+        last_err=''
+        for attempt in attempts:
+            p=subprocess.run(attempt,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
+            if not p.returncode: return p.stdout
+            last_err=p.stderr[-1600:] or 'Processing failed'
+        raise RuntimeError(last_err)
     p=subprocess.run(args,env=env,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
     if p.returncode: raise RuntimeError(p.stderr[-1600:] or 'Processing failed')
     return p.stdout
@@ -69,12 +84,12 @@ def friendly_error(error, browser=''):
     if 'confirm your age' in lower or 'age-restricted' in lower:
         if browser:
             return 'YouTube still requires age verification with the selected '+browser+' login. The browser selection was received. Make sure this video plays in that browser’s signed-in profile; a different Chrome profile may be needed. You can enter its profile folder below (for example Default or Profile 1).'
-        return 'This video requires an age-verified YouTube login. Confirm playback in your browser, then select that browser under YouTube login and create a new job.'
-    if 'sign in to confirm' in lower:
-        return 'YouTube requires a login or bot check. Confirm playback in the selected browser and profile, then try again. '+actual[-600:]
+        return 'This video requires an age-verified YouTube login. Confirm playback in your browser, then select that browser or paste cookies.txt under YouTube login options and create a new job.'
+    if 'sign in to confirm' in lower or 'failed to extract any player response' in lower or ' blocked by youtube' in lower:
+        return 'YouTube blocked or rejected anonymous extraction from this server IP. Open "YouTube login options" and paste exported YouTube cookies.txt (or select your signed-in browser in local mode), or use "Upload video" instead. '+actual[-600:]
     return actual[-1600:]
 SEM=threading.Semaphore(1)
-def process(job):
+def process(job, cookies=''):
     with SEM:
         data=workspace(job.get('owner',''));folder=data/job['id']; folder.mkdir(exist_ok=True)
         try:
@@ -85,12 +100,28 @@ def process(job):
                 if not source.is_file(): raise ValueError('Uploaded video is missing')
             else:
                 progress('downloading','Downloading source video…')
-                browser_spec=job.get('browser','')+(':'+job['profile'] if job.get('profile') else '')
-                login=['--cookies-from-browser',browser_spec] if job.get('browser') else []
-                info=json.loads(run(['yt-dlp',*login,'--no-playlist','--dump-single-json','--skip-download','--',job['url']]))
-                job['title']=info.get('title','Untitled video'); job['duration']=float(info.get('duration') or 0); save()
-                run(['yt-dlp',*login,'--no-playlist','-f','bv*[height<=720]+ba/b[height<=720]' if CLOUD_LITE else 'bv*[height<=1080]+ba/b[height<=1080]','--merge-output-format','mp4','-o',str(folder/'source.%(ext)s'),'--',job['url']])
-                sources=[p for p in folder.glob('source.*') if p.suffix not in ('.part','.ytdl')]
+                cookie_text=(cookies or os.environ.get('YOUTUBE_COOKIES','')).strip()
+                cookie_file=folder/'.cookies.txt'
+                try:
+                    if cookie_text:
+                        header='' if cookie_text.startswith('# Netscape HTTP Cookie File') else '# Netscape HTTP Cookie File\n'
+                        with cookie_file.open('w',encoding='utf-8') as cf:cf.write(header+cookie_text+'\n')
+                        cookie_file.chmod(0o600)
+                        login=['--cookies',str(cookie_file)]
+                    elif job.get('browser'):
+                        browser_spec=job.get('browser','')+(':'+job['profile'] if job.get('profile') else '')
+                        login=['--cookies-from-browser',browser_spec]
+                    else:
+                        login=[]
+                    run(['yt-dlp',*login,'--no-playlist','--write-info-json','-f','bv*[height<=720]+ba/b[height<=720]' if CLOUD_LITE else 'bv*[height<=1080]+ba/b[height<=1080]','--merge-output-format','mp4','-o',str(folder/'source.%(ext)s'),'--',job['url']])
+                    info_file=folder/'source.info.json'
+                    if info_file.is_file():
+                        info=json.loads(info_file.read_text(encoding='utf-8',errors='replace'))
+                        job['title']=info.get('title','Untitled video'); job['duration']=float(info.get('duration') or 0); save()
+                finally:
+                    cookie_file.unlink(missing_ok=True)
+                    for extra in folder.glob('*.info.json'):extra.unlink(missing_ok=True)
+                sources=[p for p in folder.glob('source.*') if p.suffix not in ('.part','.ytdl','.json')]
                 if not sources: raise RuntimeError('No source video downloaded')
                 source=sources[0]
             duration=float(run(['ffprobe','-v','error','-show_entries','format=duration','-of','default=noprint_wrappers=1:nokey=1',str(source)]))
@@ -272,7 +303,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.path!='/api/jobs': return self.respond(404,{'error':'Not found'})
         try:
             size=int(self.headers.get('Content-Length','0'))
-            if size<1 or size>8192: raise ValueError('Request too large')
+            if size<1 or size>65536: raise ValueError('Request too large')
             body=json.loads(self.rfile.read(size))
             if not isinstance(body,dict):raise ValueError('Expected a JSON object')
             url=str(body.get('url','')).strip(); parsed=urlparse(url)
@@ -287,6 +318,8 @@ class Handler(BaseHTTPRequestHandler):
             if browser and (PUBLIC_ACCESS or BIND!='127.0.0.1'): raise ValueError('Browser login is only available in local mode')
             profile=str(body.get('profile','')).strip()
             if profile and (len(profile)>60 or not all(c.isalnum() or c in ' _-' for c in profile)): raise ValueError('Enter a profile folder such as Default or Profile 1')
+            cookies=str(body.get('cookies','')).strip()
+            if len(cookies)>49152: raise ValueError('Cookies text must be 48 KB or smaller')
             layout=body.get('layout','original')
             if layout not in ('original','portrait','square','portrait-fit'): raise ValueError('Invalid output layout')
             start=float(body.get('start',0)); end=float(body.get('end') or 0); max_clips=int(body.get('max_clips',0))
@@ -307,7 +340,7 @@ class Handler(BaseHTTPRequestHandler):
             with LOCK:
                 if upload and not (self.data/'uploads'/upload).is_file():raise ValueError('This original was deleted. Choose the file and upload it again.')
                 JOBS.insert(0,job);save()
-            threading.Thread(target=process,args=(job,),daemon=True).start(); return self.respond(201,public_job(job))
+            threading.Thread(target=process,args=(job,cookies),daemon=True).start(); return self.respond(201,public_job(job))
         except (ValueError,KeyError,TypeError,OverflowError) as e: return self.respond(400,{'error':str(e)})
 if __name__=='__main__':
     server=ThreadingHTTPServer((BIND,PORT),Handler)
