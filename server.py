@@ -4,7 +4,7 @@ from pathlib import Path
 from contextlib import nullcontext
 from urllib.parse import urlparse, unquote, parse_qs
 from http.cookies import SimpleCookie
-import sys, importlib.util, re
+import sys, importlib.util, re, time
 sys.path.insert(0,str(Path(__file__).resolve().parent))
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 import storage
@@ -26,8 +26,10 @@ def load():
     try: return json.loads((DATA/'jobs.json').read_text())
     except FileNotFoundError: return []
 JOBS=load()
+MAC_PAIRS={}
+MAC_ONLINE={}
 for j in JOBS:
-    if j['status'] in ('queued','downloading','transcribing','analyzing','cutting'): j.update(status='failed',error='App restarted. Please create this job again.')
+    if j['status'] in ('queued','downloading','transcribing','analyzing','cutting','waiting_mac','mac_download'): j.update(status='failed',error='App restarted. Please create this job again.')
 def save():
     with LOCK:
         p=DATA/'jobs.tmp'; p.write_text(json.dumps(JOBS)); p.replace(DATA/'jobs.json')
@@ -50,7 +52,7 @@ def can_retry_source(job):
 
 
 def public_job(job):
-    return {**{key:value for key,value in job.items() if key!='owner'},
+    return {**{key:value for key,value in job.items() if key not in ('owner','mac_lease','mac_expires')},
             'source_retry':bool(can_retry_source(job))}
 
 def run(args):
@@ -331,7 +333,7 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/storage':
             with LOCK:return self.respond(200,storage.inventory(self.data,self.visible_jobs()))
         if path=='/api/health':
-            return self.respond(200,{'ai':highlights_available(),'face_model':(ROOT/'models'/'face_detection_yunet_2023mar.onnx').is_file(),'cloud_lite':CLOUD_LITE,'youtube_build':os.environ.get('CLIPFLOW_YOUTUBE_BUILD'),'upload_limit':MAX_UPLOAD,'max_source_seconds':MAX_SOURCE_SECONDS,'max_clips':None,'public_access':PUBLIC_ACCESS})
+            return self.respond(200,{'ai':highlights_available(),'face_model':(ROOT/'models'/'face_detection_yunet_2023mar.onnx').is_file(),'cloud_lite':CLOUD_LITE,'youtube_build':os.environ.get('CLIPFLOW_YOUTUBE_BUILD'),'mac_bridge':PUBLIC_ACCESS and CLOUD_LITE,'mac_paired':self.owner in MAC_PAIRS.values(),'mac_online':time.monotonic()-MAC_ONLINE.get(self.owner,-1000)<30,'upload_limit':MAX_UPLOAD,'max_source_seconds':MAX_SOURCE_SECONDS,'max_clips':None,'public_access':PUBLIC_ACCESS})
         if path.startswith('/api/bundle/'):
             job=next((j for j in self.visible_jobs() if j['id']==path.rsplit('/',1)[-1]),None)
             if not job or job['status']!='ready': return self.respond(404,{'error':'Completed project not found'})
@@ -379,9 +381,104 @@ class Handler(BaseHTTPRequestHandler):
                     if not chunk:break
                     self.wfile.write(chunk);remaining-=len(chunk)
         except (BrokenPipeError,ConnectionResetError):pass
+    def mac_request(self, path):
+        if not CLOUD_LITE or not PUBLIC_ACCESS:
+            return self.respond(404, {'error':'Mac connection is unavailable'})
+        token = self.headers.get('Authorization','').removeprefix('Bearer ')
+        if not re.fullmatch(r'[a-f0-9]{64}', token):
+            return self.respond(401, {'error':'Mac authorization required'})
+        digest = hashlib.sha256(token.encode()).hexdigest()
+        with LOCK:
+            owner = MAC_PAIRS.get(digest)
+            if not owner:
+                return self.respond(403, {'error':'Pair this Mac with a browser workspace first'})
+            MAC_ONLINE[owner] = time.monotonic()
+            for job in JOBS:
+                if job.get('owner') == owner and job['status'] == 'mac_download' and job['mac_expires'] < time.monotonic():
+                    job.update(status='failed',error='The Mac download did not finish. Check the helper and create the job again.')
+                    save()
+            if path == '/api/mac/next':
+                if any(j.get('owner')==owner and j['status']=='mac_download' for j in JOBS):
+                    return self.respond(200, {'job':None})
+                job = next((j for j in reversed(JOBS) if j.get('owner')==owner and j['status']=='waiting_mac'), None)
+                if not job:
+                    return self.respond(200, {'job':None})
+                job.update(status='mac_download',detail='Downloading YouTube video on your Mac…',
+                           mac_lease=secrets.token_hex(16),mac_expires=time.monotonic()+900)
+                save()
+                return self.respond(200, {'job':{'id':job['id'],'video_id':job['mac_video_id'],'lease':job['mac_lease']}})
+            match = re.fullmatch(r'/api/mac/jobs/([a-f0-9]{32})/(source|failed)', path)
+            if not match:
+                return self.respond(404, {'error':'Unknown Mac endpoint'})
+            job = next((j for j in JOBS if j.get('owner')==owner and j['id']==match[1]), None)
+            if not job or job['status']!='mac_download' or not hmac.compare_digest(job['mac_lease'],self.headers.get('X-ClipFlow-Lease','')):
+                return self.respond(409, {'error':'Job is no longer assigned to this Mac'})
+            if match[2]=='failed':
+                job.update(status='failed',error='The Mac could not download or transfer this YouTube video. Check the Mac helper log.')
+                save()
+                return self.respond(200, {'ok':True})
+        target = None
+        attached = False
+        try:
+            folder = workspace(owner)/'uploads'
+            folder.mkdir(exist_ok=True)
+            target = folder/(uuid.uuid4().hex+'.mp4')
+            size = int(self.headers.get('Content-Length','0'))
+            if size < 1 or (MAX_UPLOAD and size > MAX_UPLOAD) or size > shutil.disk_usage(folder).free:
+                raise ValueError('The uploaded source exceeds available storage or the server limit')
+            with target.open('xb') as stream:
+                while size:
+                    chunk=self.rfile.read(min(1024*1024,size))
+                    if not chunk:
+                        raise ValueError('Mac transfer was interrupted')
+                    stream.write(chunk)
+                    size-=len(chunk)
+            if not run(['ffprobe','-v','error','-select_streams','v:0','-show_entries','stream=width','-of','csv=p=0',str(target)]).strip():
+                raise ValueError('The Mac source file contains no video')
+            with LOCK:
+                if job['status']!='mac_download' or job['mac_lease']!=self.headers.get('X-ClipFlow-Lease'):
+                    return self.respond(409, {'error':'Job is no longer assigned to this Mac'})
+                title = unquote(self.headers.get('X-ClipFlow-Title','')).strip()
+                if title:
+                    job['title']=title[:200]
+                job.update(upload=target.name,status='queued',detail='Mac transfer complete. Waiting to generate clips…')
+                job.pop('mac_lease',None)
+                job.pop('mac_expires',None)
+                save()
+                attached=True
+            threading.Thread(target=process,args=(job,),daemon=True).start()
+            return self.respond(202, {'ok':True})
+        except (ValueError, OSError, RuntimeError) as error:
+            return self.respond(400, {'error':str(error)})
+        finally:
+            if target and not attached:
+                target.unlink(missing_ok=True)
+
     def do_POST(self):
+        path = urlparse(self.path).path
+        if path.startswith('/api/mac/') and path!='/api/mac/pair':
+            return self.mac_request(path)
         if not self.authorized(): return
         if self.headers.get('Origin') not in (None,PUBLIC_ORIGIN,'http://localhost:8765'): return self.respond(403,{'error':'Invalid origin'})
+        if path=='/api/mac/pair':
+            if not CLOUD_LITE or not PUBLIC_ACCESS:
+                return self.respond(404, {'error':'Mac connection is unavailable'})
+            try:
+                length=int(self.headers.get('Content-Length','0'))
+                body=json.loads(self.rfile.read(length)) if 1<=length<=256 else {}
+                token=body.get('code','') if isinstance(body,dict) else ''
+                if not isinstance(token,str) or not re.fullmatch(r'[a-f0-9]{64}',token):
+                    raise ValueError('Invalid Mac pairing code')
+                digest=hashlib.sha256(token.encode()).hexdigest()
+                with LOCK:
+                    if digest in MAC_PAIRS and MAC_PAIRS[digest]!=self.owner:
+                        return self.respond(409, {'error':'This Mac code already belongs to another workspace'})
+                    for old_digest in [key for key,owner in MAC_PAIRS.items() if owner==self.owner]:
+                        MAC_PAIRS.pop(old_digest)
+                    MAC_PAIRS[digest]=self.owner
+                return self.respond(200, {'paired':True})
+            except (ValueError,TypeError) as error:
+                return self.respond(400, {'error':str(error)})
         retry = re.fullmatch(r'/api/jobs/([a-f0-9]{32})/retry-upload', urlparse(self.path).path)
         if retry:
             try:
@@ -484,10 +581,24 @@ class Handler(BaseHTTPRequestHandler):
             selection=body.get('selection','even')
             if selection not in ('even','highlights'):raise ValueError('Choose AI Highlights or Even Cuts')
             job=dict(owner=self.owner,upload=upload,selection=selection,model='tiny' if CLOUD_LITE else 'base',language='',caption_style='bold',captions=False,tracking=False,topic='',layout=layout,start=start,end=end,max_clips=max_clips,profile=profile,browser=browser,id=uuid.uuid4().hex,url=url,seconds=seconds,title=str(body.get('title','Uploaded video'))[:200] if upload else 'New YouTube video',status='queued',clips=[],total=0)
+            if not upload and self.owner and self.owner in MAC_PAIRS.values():
+                if parsed.hostname=='youtu.be':
+                    video_id=parsed.path.strip('/')
+                elif parsed.path=='/watch':
+                    video_id=parse_qs(parsed.query).get('v',[''])[0]
+                else:
+                    video_id=parsed.path.rsplit('/',1)[-1] if re.fullmatch(r'/(shorts|live|embed)/[^/]+',parsed.path) else ''
+                if not re.fullmatch(r'[A-Za-z0-9_-]{11}',video_id):
+                    raise ValueError('Paste a YouTube link for one video')
+                if time.monotonic()-MAC_ONLINE.get(self.owner,-1000)>=30:
+                    raise ValueError('Your Mac helper is offline. Open it and try again.')
+                job.update(status='waiting_mac',detail='Waiting for your Mac to download the video…',mac_video_id=video_id)
             with LOCK:
                 if upload and not (self.data/'uploads'/upload).is_file():raise ValueError('This original was deleted. Choose the file and upload it again.')
                 JOBS.insert(0,job);save()
-            threading.Thread(target=process,args=(job,cookies),daemon=True).start(); return self.respond(201,public_job(job))
+            if job['status']!='waiting_mac':
+                threading.Thread(target=process,args=(job,cookies),daemon=True).start()
+            return self.respond(201,public_job(job))
         except (ValueError,KeyError,TypeError,OverflowError) as e: return self.respond(400,{'error':str(e)})
 if __name__=='__main__':
     server=ThreadingHTTPServer((BIND,PORT),Handler)
